@@ -232,18 +232,37 @@ struct IOSRunnerSessionServerTests {
         await host.close()
     }
 
-    @Test("continuous complete heartbeats cannot extend maximum lifetime")
-    func heartbeatsCannotExtendLifetime() async throws {
-        let running = try await RunningSession.start(lease: .milliseconds(200), maximum: .milliseconds(350))
-        let traffic = Task {
-            while !Task.isCancelled {
-                _ = try await running.send(running.request(.identity))
-                try await Task.sleep(for: .milliseconds(50))
+    @Test("continuous complete heartbeats cannot extend maximum lifetime", arguments: [0, 250])
+    func heartbeatsCannotExtendLifetime(heartbeatDelayMilliseconds: Int) async throws {
+        // This case tests the maximum lifetime, independently of idle lease expiry.
+        // A delayed CI heartbeat must not lose a race against an unrelated shorter lease.
+        let started = ContinuousClock.now
+        let running = try await RunningSession.start(lease: .seconds(2), maximum: .seconds(1))
+        var traffic: Task<Void, Error>?
+        do {
+            try await Task.sleep(for: .milliseconds(heartbeatDelayMilliseconds))
+            // Prove actual authenticated heartbeats happened; a failed background task
+            // followed by silent lifetime expiry must not satisfy this test.
+            for _ in 0..<2 {
+                let request = running.request(.identity)
+                let reply = try await running.send(request)
+                try #require(reply.requestID == request.requestID && reply.status == .success)
             }
+            traffic = Task {
+                while !Task.isCancelled {
+                    _ = try await running.send(running.request(.identity))
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+            }
+            let exit = try await running.task.value
+            traffic?.cancel(); _ = try? await traffic?.value
+            #expect(exit == .lifetimeExpired)
+            #expect(started.duration(to: .now) < .seconds(3))
+            await running.host.close()
+        } catch {
+            traffic?.cancel(); await running.cancel(); _ = try? await traffic?.value
+            throw error
         }
-        #expect(try await running.task.value == .lifetimeExpired)
-        traffic.cancel(); _ = try? await traffic.value
-        await running.host.close()
     }
 
     @Test("invalid lease configuration closes the stream", arguments: [Duration.zero, .seconds(-1), .seconds(31)])
