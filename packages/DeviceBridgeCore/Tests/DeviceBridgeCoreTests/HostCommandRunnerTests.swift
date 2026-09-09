@@ -46,8 +46,8 @@ struct HostCommandRunnerTests {
     @Test("nonzero exit preserves both output channels")
     func nonzeroExitPreservesOutput() async throws {
         let result = try await runner.run(HostCommandRequest(
-            executableURL: URL(fileURLWithPath: "/usr/bin/python3"),
-            arguments: ["-c", "import sys; print('out'); print('err', file=sys.stderr); sys.exit(7)"],
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "printf 'out\\n'; printf 'err\\n' >&2; exit 7"],
             timeout: .seconds(2)
         ))
 
@@ -97,10 +97,9 @@ struct HostCommandRunnerTests {
     @Test("stdout and stderr are drained without deadlock")
     func drainsBothChannels() async throws {
         let result = try await runner.run(HostCommandRequest(
-            executableURL: URL(fileURLWithPath: "/usr/bin/python3"),
+            executableURL: URL(fileURLWithPath: "/usr/bin/awk"),
             arguments: [
-                "-c",
-                "import sys; sys.stdout.write('o'*200000); sys.stderr.write('e'*200000)"
+                "BEGIN { for (i=0; i<200000; i++) printf \"o\"; for (i=0; i<200000; i++) printf \"e\" > \"/dev/stderr\" }"
             ],
             timeout: .seconds(3),
             maximumOutputBytes: 500_000
@@ -108,14 +107,16 @@ struct HostCommandRunnerTests {
 
         #expect(result.standardOutput.count == 200_000)
         #expect(result.standardError.count == 200_000)
+        #expect(result.standardOutputString == String(repeating: "o", count: 200_000))
+        #expect(result.standardErrorString == String(repeating: "e", count: 200_000))
     }
 
     @Test("combined output over the limit fails safely")
     func outputLimitStopsCommand() async {
         do {
             _ = try await runner.run(HostCommandRequest(
-                executableURL: URL(fileURLWithPath: "/usr/bin/python3"),
-                arguments: ["-c", "print('x'*10000)"],
+                executableURL: URL(fileURLWithPath: "/usr/bin/printf"),
+                arguments: ["%s\\n", String(repeating: "x", count: 10_000)],
                 timeout: .seconds(2),
                 maximumOutputBytes: 1_024
             ))
