@@ -96,7 +96,7 @@ struct NativeIOSWorkspaceVMProvider: IOSWorkspaceVMProviding {
 }
 
 @MainActor
-final class WorkspaceViewModel: ObservableObject {
+final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     @Published private(set) var devices: [DeviceRecord] = []
     @Published private(set) var selectedDeviceIdentity: DeviceIdentity?
     @Published private(set) var isRefreshing = false
@@ -132,6 +132,39 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var memoryFeedback: InterfaceMessage?
     @Published private(set) var isMonitoringMemory = false
     @Published private(set) var androidKeepAliveState: AndroidKeepAliveControllerState = .idle
+
+    private lazy var agentController = AgentAPIController(workspace: self)
+    private var agentIPCServer: AgentIPCServer?
+    private var agentIPCStartupTask: Task<Void, Never>?
+    private var agentIPCCleanupTask: Task<Void, Never>?
+    private enum AndroidCommandOwner {
+        case preparing(id: UUID, server: ADBServerConnection)
+        case ready(AndroidDeviceCommandBinding)
+
+        var id: UUID {
+            switch self {
+            case let .preparing(id, _): id
+            case let .ready(binding): binding.id
+            }
+        }
+        var server: ADBServerConnection {
+            switch self {
+            case let .preparing(_, server): server
+            case let .ready(binding): binding.server
+            }
+        }
+    }
+    private var androidCommandOwner: AndroidCommandOwner?
+    private var androidCommandBinding: AndroidDeviceCommandBinding? {
+        guard case let .ready(binding) = androidCommandOwner else { return nil }
+        return binding
+    }
+    let androidShell = AndroidShellViewModel()
+    private var shellObservation: AnyCancellable?
+    let deviceInformation = DeviceInformationViewModel()
+    private var informationObservation: AnyCancellable?
+    private var informationRunnerChannel: (any IOSRunnerDeviceInformationChannel)?
+    private var informationRunnerLaunchID: UUID?
 
     private let store = DeviceSessionStore()
     private let iosPhotoDiscovery = IOSPhotoDiscovery()
@@ -199,8 +232,71 @@ final class WorkspaceViewModel: ObservableObject {
         self.iosRunnerFactory = iosRunnerFactory
         self.iosMemoryProvider = iosMemoryProvider ?? NativeIOSWorkspaceVMProvider()
         usesFixtureMemory = arguments.contains("--fixture-devices") && iosMemoryProvider == nil
+        shellObservation = androidShell.objectWillChange.sink { [weak self] in
+            self?.objectWillChange.send()
+        }
+        informationObservation = deviceInformation.objectWillChange.sink { [weak self] in
+            self?.objectWillChange.send()
+        }
         if arguments.contains("--fixture-devices") {
             devices = Self.fixtureDevices()
+        }
+    }
+
+    var agentCLIPath: String? {
+        let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/devicebridge-agent")
+        if FileManager.default.isExecutableFile(atPath: bundled.path) { return bundled.path }
+#if DEBUG
+        var repository = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { repository.deleteLastPathComponent() }
+        let development = repository.appendingPathComponent("packages/DeviceBridgeCore/.build/debug/devicebridge-agent")
+        if FileManager.default.isExecutableFile(atPath: development.path) { return development.resolvingSymlinksInPath().path }
+#endif
+        return nil
+    }
+
+    var agentDevice: DeviceRecord? { selectedDevice }
+    var agentActionsAllowed: Bool { hasStarted && contentActionsAllowed }
+
+    func startAgentAPI() {
+        guard agentIPCServer == nil, !arguments.contains("--fixture-devices") else { return }
+        let controller = agentController
+        let server = AgentIPCServer { [weak controller] request in
+            guard let controller else {
+                return AgentAPIResponse(requestID: request.requestID,
+                    error: AgentAPIError(code: .appUnavailable, message: "The application workspace is unavailable."))
+            }
+            return await controller.handle(request)
+        }
+        agentIPCServer = server
+        let previousCleanup = agentIPCCleanupTask
+        agentIPCStartupTask = Task { [weak self] in
+            await previousCleanup?.value
+            guard let self, self.agentIPCServer === server, !Task.isCancelled else {
+                await server.stop()
+                return
+            }
+            do { try await server.start() }
+            catch {
+                guard self.agentIPCServer === server else { return }
+                self.diagnostics.append("The local Agent interface is unavailable. Another app instance may already own it.")
+                self.agentIPCServer = nil
+            }
+        }
+    }
+
+    func stopAgentAPI() {
+        agentController.invalidate()
+        let server = agentIPCServer
+        agentIPCServer = nil
+        let startup = agentIPCStartupTask
+        agentIPCStartupTask = nil
+        startup?.cancel()
+        let previousCleanup = agentIPCCleanupTask
+        agentIPCCleanupTask = Task {
+            await previousCleanup?.value
+            await startup?.value
+            await server?.stop()
         }
     }
 
@@ -370,6 +466,9 @@ final class WorkspaceViewModel: ObservableObject {
     }
 
     func stop() {
+        stopAgentAPI()
+        invalidateAndroidCommands()
+        deviceInformation.invalidate()
         detachIOSRunner()
         invalidateIOSMemory()
         imageBrowser?.stop()
@@ -520,6 +619,29 @@ final class WorkspaceViewModel: ObservableObject {
     }
 
     private func publishInventory(_ snapshot: WorkspaceSnapshot) {
+        agentController.validateSession(snapshot.session)
+        if let binding = androidCommandBinding,
+           snapshot.session != binding.session || !snapshot.devices.contains(where: { device in
+               device.identity == binding.session.deviceIdentity && device.authorization == .authorized
+                   && device.candidates.contains(where: { $0.id == binding.session.transportID
+                       && $0.metadata["adbSerial"] == binding.route.adbSerial })
+           }) {
+            invalidateAndroidCommands()
+        }
+        if let session = androidShell.session,
+           snapshot.session != session || !snapshot.devices.contains(where: {
+               $0.identity == session.deviceIdentity && $0.authorization == .authorized
+                   && $0.candidates.contains(where: { $0.id == session.transportID })
+           }) {
+            invalidateAndroidCommands()
+        }
+        if let session = deviceInformation.session,
+           snapshot.session != session || !snapshot.devices.contains(where: {
+               $0.identity == session.deviceIdentity && $0.preferredTransportID == session.transportID
+                   && $0.authorization != .denied
+           }) {
+            deviceInformation.invalidate()
+        }
         if let session = iosMemorySession,
            snapshot.session != session || !snapshot.devices.contains(where: {
                $0.identity == session.deviceIdentity && $0.preferredTransportID == session.transportID
@@ -570,6 +692,8 @@ final class WorkspaceViewModel: ObservableObject {
             return
         }
         deviceSelection = .checking(candidate)
+        invalidateAndroidCommands()
+        deviceInformation.invalidate()
         detachIOSRunner()
         invalidateIOSMemory()
         let previousIOSCleanup = iosRunnerCleanupTask
@@ -697,6 +821,10 @@ final class WorkspaceViewModel: ObservableObject {
                 publishInventory(readySnapshot)
                 deviceSelection = nil
                 connectionHealth = .healthy
+                if let session = readySnapshot.session {
+                    bindDeviceInformation(device: device, session: session)
+                    agentController.activate(session: session)
+                }
                 if device.identity.platform != .iOS || arguments.contains("--fixture-devices") {
                     prepareScreenshot(for: device)
                 }
@@ -710,6 +838,11 @@ final class WorkspaceViewModel: ObservableObject {
                 if device.identity.platform == .iOS, !arguments.contains("--fixture-devices"),
                    let session = readySnapshot.session {
                     await prepareIOSRunner(for: device, session: session, revision: revision)
+                }
+                guard !Task.isCancelled, selectionRevision == revision else { return }
+                if device.identity.platform == .android, !arguments.contains("--fixture-devices"),
+                   let session = readySnapshot.session {
+                    await prepareAndroidCommands(device: device, session: session, revision: revision)
                 }
                 guard !Task.isCancelled, selectionRevision == revision else { return }
                 await startConnectionMaintenance(for: device, revision: revision)
@@ -1301,6 +1434,90 @@ final class WorkspaceViewModel: ObservableObject {
     }
 
     /// Workspace owns the selected-session binding; the manager exclusively owns native resources.
+    private func prepareAndroidCommands(device: DeviceRecord, session: ConnectionSession, revision: Int) async {
+        guard let candidate = device.candidates.first(where: { $0.id == session.transportID }),
+              candidate.source == .adb, let serial = candidate.metadata["adbSerial"],
+              !serial.isEmpty, !["unknown", "????????????"].contains(serial.lowercased()),
+              let transportID = UInt64(session.transportID), transportID > 0,
+              devices.flatMap(\.candidates).filter({ $0.metadata["adbSerial"] == serial }).count == 1 else {
+            androidShell.setUnavailable("This Android route cannot establish a unique device binding.")
+            return
+        }
+        let identity: ADBRouteIdentityEvidence
+        if candidate.kind == .usb { identity = .uniqueUSBSerial }
+        else if let context = helperContext { identity = .trustedWiFiHelper(context) }
+        else {
+            androidShell.setUnavailable("Open the existing Android helper and select the device again to verify this Wi-Fi route.")
+            return
+        }
+        let id = UUID()
+        do {
+            let route = try ADBCapturedRoute(adbSerial: serial, transportID: transportID,
+                sessionGeneration: session.generation, identityEvidence: identity)
+            let server = try ADBServerConnection { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.androidCommandOwner?.id == id else { return }
+                    self.invalidateAndroidCommands()
+                    self.androidShell.setUnavailable("The local Android connection ended. Select the device again.")
+                }
+            }
+            androidCommandOwner = .preparing(id: id, server: server)
+            do {
+                let epoch = try await server.beginEpoch(deadline: .now.advanced(by: .seconds(5)))
+                let binding = AndroidDeviceCommandBinding(id: id, session: session, server: server, epoch: epoch, route: route)
+                guard !Task.isCancelled, selectionRevision == revision, await binding.isCurrent(in: store),
+                      !Task.isCancelled, selectionRevision == revision,
+                      androidCommandOwner?.id == id else {
+                    if androidCommandOwner?.id == id { androidCommandOwner = nil }
+                    await server.close()
+                    return
+                }
+                androidCommandOwner = .ready(binding)
+                deviceInformation.bind(device: device, session: session, service: DeviceInformationService(store: store,
+                    provider: AndroidDeviceInformationProvider(commands: NativeAndroidInformationCommands(binding: binding, store: store))))
+                let store = store
+                androidShell.bind(session: session, service: AndroidShellService(store: store,
+                    makeExecutor: { binding.makeExecutor() }, bindingIsCurrent: { requested in
+                        guard requested == session else { return false }
+                        return await binding.isCurrent(in: store)
+                    }))
+            } catch {
+                if androidCommandOwner?.id == id { androidCommandOwner = nil }
+                await server.close()
+                throw error
+            }
+        } catch {
+            guard !Task.isCancelled, selectionRevision == revision else { return }
+            androidShell.setUnavailable("The local Android connection could not be prepared. Select the device again.")
+        }
+    }
+
+    private func invalidateAndroidCommands() {
+        agentController.invalidate()
+        let owner = androidCommandOwner
+        androidCommandOwner = nil
+        androidShell.invalidate()
+        if deviceInformation.session?.deviceIdentity.platform == .android { deviceInformation.invalidate() }
+        Task { await owner?.server.close() }
+    }
+
+    private func bindDeviceInformation(device: DeviceRecord, session: ConnectionSession) {
+        if arguments.contains("--fixture-devices") {
+            if device.identity.platform == .android {
+                androidShell.bind(session: session, service: FixtureShellExecutor())
+            }
+            deviceInformation.bind(device: device, session: session,
+                service: DeviceInformationService(store: store, provider: FixtureInformationProvider()))
+        } else if device.identity.platform == .iOS, let xcrunURL {
+            let runtime = informationRunnerChannel.map {
+                IOSDeviceInformationProvider.RuntimeBinding(session: session, channel: $0)
+            }
+            deviceInformation.bind(device: device, session: session,
+                service: DeviceInformationService(store: store,
+                    provider: IOSDeviceInformationProvider(xcrunURL: xcrunURL, commands: runner, runtime: runtime)))
+        }
+    }
+
     private func prepareIOSRunner(for device: DeviceRecord, session: ConnectionSession, revision: Int) async {
         guard device.identity.stability == .stable,
               let route = device.candidates.first(where: { $0.id == session.transportID }),
@@ -1351,6 +1568,22 @@ final class WorkspaceViewModel: ObservableObject {
             let clipboardChannel = outcome.channel as? any IOSRunnerClipboardChannel
             let clipboardContext = try? await clipboardChannel?.authenticatedClipboardContext()
             guard await iosRunnerMatches(session, revision: revision) else { return }
+            if let metadataChannel = outcome.channel as? any IOSRunnerDeviceInformationChannel {
+                let launchID = metadataChannel.launchID
+                informationRunnerLaunchID = launchID
+                informationRunnerChannel = metadataChannel
+                // Register after assigning the binding: an already-closing channel calls back immediately.
+                await metadataChannel.registerInvalidationHandler { [weak self] lostLaunchID in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.informationRunnerLaunchID == lostLaunchID,
+                              self.iosRunnerSession == session, self.selectionRevision == revision else { return }
+                        self.invalidateIOSRunner(reason: "The iOS runner session ended. Select the device again to reconnect.")
+                    }
+                }
+                guard await iosRunnerMatches(session, revision: revision),
+                      informationRunnerLaunchID == launchID else { return }
+                bindDeviceInformation(device: device, session: session)
+            }
             installScreenshotProvider(IOSRunnerScreenshotProvider(channel: channel, context: context,
                 transportID: session.transportID))
             // One launch and one heartbeat own both features. Capability inspection is
@@ -1419,6 +1652,13 @@ final class WorkspaceViewModel: ObservableObject {
 
     /// Synchronous invalidation precedes asynchronous native cleanup. New preparation drains it.
     private func detachIOSRunner() {
+        informationRunnerLaunchID = nil
+        informationRunnerChannel = nil
+        if let session = deviceInformation.session, session.deviceIdentity.platform == .iOS,
+           let device = selectedDevice {
+            deviceInformation.cancel()
+            bindDeviceInformation(device: device, session: session)
+        }
         iosPreparationObservationTask?.cancel()
         iosPreparationObservationTask = nil
         iosPreparation = nil
@@ -1640,6 +1880,8 @@ final class WorkspaceViewModel: ObservableObject {
     }
 
     private func cancelDisconnectedContent() {
+        invalidateAndroidCommands()
+        deviceInformation.invalidate()
         if selectedDevice?.identity.platform == .iOS {
             invalidateIOSMemory(reason: "The iOS device route changed. Select the device again.")
         }
@@ -1865,6 +2107,7 @@ private actor WorkspaceRecoveryTransport: ConnectionMaintenanceTransport {
     private let injectRecovery: Bool
     private var probes = 0
     init(injectRecovery: Bool) { self.injectRecovery = injectRecovery }
+    func observeCurrentRoute(_ candidate: TransportCandidate) async throws -> Bool { true }
     func probe(_ candidate: TransportCandidate) async throws -> Bool {
         probes += 1
         return !injectRecovery || probes > 2
@@ -2002,5 +2245,30 @@ private actor FixtureMemorySampler: MemorySampling {
             rssBytes: (64 + sampleNumber) * 1_024 * 1_024,
             pssBytes: (48 + sampleNumber) * 1_024 * 1_024
         ))
+    }
+}
+
+private struct FixtureInformationProvider: DeviceInformationProviding {
+    func read(device: DeviceRecord, session: ConnectionSession, deadline: ContinuousClock.Instant,
+              validateSession: @escaping @Sendable () async throws -> Void) async throws -> DeviceInformationReport {
+        try await validateSession()
+        let now = Date()
+        let source = DeviceInformationSource(kind: .session, queriedAt: now)
+        return try DeviceInformationReport(deviceName: device.name, session: session,
+            queryStartedAt: now, queryFinishedAt: now,
+            sections: DeviceInformationCatalog.makeSections(values: [
+                "identity.name": DeviceInformationCatalog.field("identity.name", value: .text(device.name), source: source),
+                "identity.platform": DeviceInformationCatalog.field("identity.platform",
+                    value: .text(device.identity.platform == .iOS ? "iOS" : "Android"), source: source)
+            ]))
+    }
+}
+
+private struct FixtureShellExecutor: AndroidShellExecuting {
+    func run(command: String, session: ConnectionSession, operationID: UUID,
+             origin: DeviceOperationOrigin, startedAt: Date, deadline: ContinuousClock.Instant) async -> AndroidShellOutcome {
+        .execution(AndroidShellExecution(id: operationID, origin: origin, session: session, command: command,
+            startedAt: startedAt, finishedAt: Date(), stdout: Data("Fixture output\n".utf8), stderr: Data(),
+            completion: .remoteExit(0)))
     }
 }

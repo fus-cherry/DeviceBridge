@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import plistlib
+import struct
 import tempfile
 import unittest
 
@@ -19,6 +20,10 @@ class ReleaseBundleTests(unittest.TestCase):
         self.app = Path(self.temp.name) / "DeviceBridge.app"
         self.helpers = self.app / "Contents/Resources/Helpers"
         self.helpers.mkdir(parents=True)
+        self.agent = self.app / "Contents/MacOS/devicebridge-agent"
+        self.agent.parent.mkdir(parents=True)
+        self.agent.write_bytes(struct.pack("<II", 0xFEEDFACF, 0x0100000C))
+        self.agent.chmod(0o755)
         (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps({
             "CFBundleIdentifier": "dev.debugutility.DeviceBridge",
             "CFBundleShortVersionString": "0.1.2", "CFBundleVersion": "10",
@@ -39,6 +44,40 @@ class ReleaseBundleTests(unittest.TestCase):
 
     def test_complete_bundle(self):
         self.verify()
+
+    def test_missing_agent_cli_is_rejected(self):
+        self.agent.unlink()
+        with self.assertRaisesRegex(ValueError, "devicebridge-agent"):
+            self.verify()
+
+    def test_agent_cli_in_resources_does_not_satisfy_bundle_contract(self):
+        self.agent.replace(self.helpers / "devicebridge-agent")
+        with self.assertRaisesRegex(ValueError, "devicebridge-agent"):
+            self.verify()
+
+    def test_non_executable_agent_cli_is_rejected(self):
+        self.agent.chmod(0o644)
+        with self.assertRaisesRegex(ValueError, "executable"):
+            self.verify()
+
+    def test_non_mach_o_agent_cli_is_rejected(self):
+        self.agent.write_bytes(b"#!/bin/sh\n")
+        with self.assertRaisesRegex(ValueError, "Mach-O"):
+            self.verify()
+
+    def test_wrong_agent_architecture_is_rejected(self):
+        self.agent.write_bytes(struct.pack("<II", 0xFEEDFACF, 0x01000007))
+        with self.assertRaisesRegex(ValueError, "arm64"):
+            self.verify()
+
+    def test_escaping_agent_symlink_is_rejected(self):
+        outside = Path(self.temp.name) / "outside-agent"
+        outside.write_bytes(struct.pack("<II", 0xFEEDFACF, 0x0100000C))
+        outside.chmod(0o755)
+        self.agent.unlink()
+        self.agent.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.verify()
 
     def test_changed_embedded_apk_is_rejected(self):
         self.apk.write_bytes(b"changed APK")

@@ -76,6 +76,7 @@ public enum HelperAction: String, Codable, Hashable, Sendable {
     case clipboardRead = "clipboard.read"
     case clipboardWrite = "clipboard.write"
     case screenshotCapture = "screenshot.capture"
+    case deviceInformation = "device.info"
     case fileHash = "file.hash"
     case keepAliveStart = "keepAlive.start"
     case keepAliveRenew = "keepAlive.renew"

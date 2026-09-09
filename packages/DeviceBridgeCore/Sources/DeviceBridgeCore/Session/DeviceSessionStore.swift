@@ -4,7 +4,23 @@ public enum DeviceSessionStoreError: Error, Equatable, Sendable {
     case deviceNotFound
     case noUsableTransport
     case noActiveSession
+    case staleSession
     case connectionBusy
+}
+
+/// Publication invalidation is separate from confirmation that Shell resources have closed.
+public enum ShellOperationInvalidationReason: Sendable, Equatable {
+    case cancelled
+    case timedOut
+    case sessionInvalidated
+}
+
+/// Store-level terminal categories; the execution owner retains output and remote exit code.
+public enum ShellOperationTerminal: Sendable, Equatable {
+    case remoteExit
+    case cancelled
+    case timedOut
+    case failure
 }
 
 public struct WorkspaceSnapshot: Sendable, Equatable {
@@ -34,9 +50,23 @@ public actor DeviceSessionStore {
     private var selectedDeviceIdentity: DeviceIdentity?
     private var session: ConnectionSession?
     private var generation = 0
-    private var activeOperations: [UUID: OperationKind] = [:]
+    private enum OperationPhase {
+        case active
+        case draining(ShellOperationInvalidationReason)
+    }
+    private struct OperationRecord {
+        let kind: OperationKind
+        let token: SessionToken
+        var phase: OperationPhase
+    }
+    private enum ProbeMode { case exclusive, currentRouteObservation }
+    private struct ProbeReservation {
+        let owner: UUID
+        let mode: ProbeMode
+    }
+    private var operations: [UUID: OperationRecord] = [:]
     private var maintenanceOwner: UUID?
-    private var probeOwner: UUID?
+    private var probeReservation: ProbeReservation?
 
     public init() {}
 
@@ -49,7 +79,9 @@ public actor DeviceSessionStore {
             devices = replacement.filter {
                 $0.identity != selectedDeviceIdentity
                     && !$0.candidates.contains { ownedRoutes.contains($0.id) && $0.source == .adb }
-            } + [selected]
+            } + [hasShellOperation
+                ? (replacement.first { $0.identity == selectedDeviceIdentity } ?? selected)
+                : selected]
             return
         }
         devices = replacement
@@ -86,7 +118,8 @@ public actor DeviceSessionStore {
 
         if let current = session,
            current.state == .active,
-           current.transportID != preferredTransportID {
+           current.transportID != preferredTransportID,
+           operations.isEmpty, probeReservation == nil {
             invalidateOperations()
             generation += 1
             session = ConnectionSession(
@@ -110,7 +143,7 @@ public actor DeviceSessionStore {
 
         invalidateOperations()
         maintenanceOwner = nil
-        probeOwner = nil
+        probeReservation = nil
         generation += 1
         selectedDeviceIdentity = identity
         session = ConnectionSession(
@@ -125,45 +158,89 @@ public actor DeviceSessionStore {
 
     public func beginOperation(
         _ kind: OperationKind,
-        id: UUID = UUID()
+        id: UUID = UUID(),
+        expectedSession: ConnectionSession? = nil
     ) throws -> SessionToken {
         guard let session, session.state == .active else {
             throw DeviceSessionStoreError.noActiveSession
         }
-        guard probeOwner == nil else { throw DeviceSessionStoreError.connectionBusy }
-        activeOperations[id] = kind
-        return SessionToken(
+        guard expectedSession == nil || expectedSession == session else {
+            throw DeviceSessionStoreError.staleSession
+        }
+        guard probeReservation == nil, operations[id] == nil,
+              kind != .androidShell || !hasShellOperation else {
+            throw DeviceSessionStoreError.connectionBusy
+        }
+        let token = SessionToken(
             deviceIdentity: session.deviceIdentity,
             transportID: session.transportID,
             sessionGeneration: session.generation,
             operationID: id
         )
+        operations[id] = OperationRecord(kind: kind, token: token, phase: .active)
+        return token
     }
 
     public func canPublish(_ token: SessionToken) -> Bool {
-        guard let session else { return false }
+        guard let session, let operation = operations[token.operationID],
+              operation.token == token, case .active = operation.phase else { return false }
         return token.canPublish(
             in: session,
-            activeOperationIDs: Set(activeOperations.keys)
+            activeOperationIDs: activeOperationIDs
         )
     }
 
     /// Consume the operation and return its publication eligibility atomically on this owner.
     @discardableResult
     public func finishOperation(_ token: SessionToken) -> Bool {
+        guard operations[token.operationID]?.token == token else { return false }
         let eligible = canPublish(token)
-        activeOperations.removeValue(forKey: token.operationID)
+        operations.removeValue(forKey: token.operationID)
         return eligible
+    }
+
+    /// Revoke success immediately. Only Shell retains its resource exclusion until finish.
+    public func invalidateOperation(_ token: SessionToken, reason: ShellOperationInvalidationReason) {
+        guard var operation = operations[token.operationID], operation.token == token else { return }
+        guard operation.kind == .androidShell else {
+            operations.removeValue(forKey: token.operationID)
+            return
+        }
+        // The first local terminal cause wins, but session loss always revokes history eligibility.
+        if case .active = operation.phase {
+            operation.phase = .draining(reason)
+        } else if reason == .sessionInvalidated {
+            operation.phase = .draining(.sessionInvalidated)
+        }
+        operations[token.operationID] = operation
+    }
+
+    /// Call only after every socket and read/write task for this execution has finished closing.
+    /// The result authorizes presentation, not remote success; the caller still checks its epoch.
+    @discardableResult
+    public func finishShellOperation(_ token: SessionToken, terminal: ShellOperationTerminal) -> Bool {
+        guard let operation = operations[token.operationID], operation.token == token,
+              operation.kind == .androidShell else { return false }
+        operations.removeValue(forKey: token.operationID)
+        guard let session, token.canPublish(in: session, activeOperationIDs: [token.operationID]) else {
+            return false
+        }
+        switch operation.phase {
+        case .active: return true
+        case .draining(.cancelled): return terminal == .cancelled
+        case .draining(.timedOut): return terminal == .timedOut
+        case .draining(.sessionInvalidated): return false
+        }
     }
 
     public func disconnect() {
         maintenanceOwner = nil
-        probeOwner = nil
+        probeReservation = nil
         guard let current = session else {
             invalidateOperations()
             return
         }
-        guard current.state != .disconnected || !activeOperations.isEmpty else { return }
+        guard current.state != .disconnected || !activeOperationIDs.isEmpty else { return }
 
         invalidateOperations()
         generation += 1
@@ -205,24 +282,35 @@ public actor DeviceSessionStore {
     }
 
     public func reserveConnectionProbe(owner: UUID, session expected: ConnectionSession) -> Bool {
-        guard maintenanceMatches(owner: owner, session: expected), activeOperations.isEmpty,
-              probeOwner == nil else { return false }
-        probeOwner = owner
+        guard maintenanceMatches(owner: owner, session: expected), operations.isEmpty,
+              probeReservation == nil else { return false }
+        probeReservation = ProbeReservation(owner: owner, mode: .exclusive)
+        return true
+    }
+
+    /// A weak health observation may coexist only with Shell, never legacy content work.
+    /// It cannot gain migration authority if Shell finishes while the observation awaits.
+    public func reserveCurrentRouteObservation(owner: UUID, session expected: ConnectionSession) -> Bool {
+        guard maintenanceMatches(owner: owner, session: expected), expected.state == .active,
+              probeReservation == nil, hasShellOperation,
+              operations.values.allSatisfy({ $0.kind == .androidShell }) else { return false }
+        probeReservation = ProbeReservation(owner: owner, mode: .currentRouteObservation)
         return true
     }
 
     public func releaseConnectionProbe(owner: UUID) {
-        if probeOwner == owner { probeOwner = nil }
+        if probeReservation?.owner == owner { probeReservation = nil }
     }
 
     public func stopMaintenance(owner: UUID) {
         guard maintenanceOwner == owner else { return }
         maintenanceOwner = nil
-        probeOwner = nil
+        probeReservation = nil
     }
 
     public func invalidateForRecovery(owner: UUID, session expected: ConnectionSession) -> ConnectionSession? {
-        guard maintenanceMatches(owner: owner, session: expected) else { return nil }
+        guard maintenanceMatches(owner: owner, session: expected),
+              probeReservation?.owner == owner else { return nil }
         invalidateOperations()
         generation += 1
         let next = ConnectionSession(deviceIdentity: expected.deviceIdentity, generation: generation,
@@ -236,8 +324,8 @@ public actor DeviceSessionStore {
     public func commitVerifiedRecovery(
         owner: UUID, session expected: ConnectionSession, candidate: TransportCandidate
     ) -> ConnectionSession? {
-        guard maintenanceMatches(owner: owner, session: expected), probeOwner == owner,
-              activeOperations.isEmpty, candidate.source == .adb,
+        guard maintenanceMatches(owner: owner, session: expected), probeReservation?.owner == owner,
+              probeReservation?.mode == .exclusive, operations.isEmpty, candidate.source == .adb,
               let index = devices.firstIndex(where: { $0.identity == expected.deviceIdentity }),
               let verified = try? TransportCandidate(
                 id: candidate.id, identity: expected.deviceIdentity, kind: candidate.kind, source: .adb,
@@ -268,7 +356,20 @@ public actor DeviceSessionStore {
     }
 
     private func invalidateOperations() {
-        activeOperations.removeAll(keepingCapacity: true)
+        for operation in operations.values {
+            invalidateOperation(operation.token, reason: .sessionInvalidated)
+        }
+    }
+
+    private var hasShellOperation: Bool {
+        operations.values.contains { $0.kind == .androidShell }
+    }
+
+    private var activeOperationIDs: Set<UUID> {
+        Set(operations.values.compactMap {
+            if case .active = $0.phase { return $0.token.operationID }
+            return nil
+        })
     }
 
     private func makeSnapshot() -> WorkspaceSnapshot {
@@ -277,7 +378,7 @@ public actor DeviceSessionStore {
             selectedDeviceIdentity: selectedDeviceIdentity,
             session: session,
             generation: generation,
-            activeOperationIDs: Set(activeOperations.keys)
+            activeOperationIDs: activeOperationIDs
         )
     }
 }

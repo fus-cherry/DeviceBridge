@@ -5,6 +5,7 @@ swift build --package-path packages/DeviceBridgeCore --product DeviceBridgeCoreC
 bridge_bin=$(swift build --package-path packages/DeviceBridgeCore --show-bin-path)
 python3 scripts/compile-core-check.py "$bridge_bin" \
   apps/macos/DeviceBridgeApp/ViewModels/*.swift \
+  apps/macos/DeviceBridgeApp/AgentAPI/AgentAPIController.swift \
   apps/macos/DeviceBridgeApp/Views/*.swift \
   apps/macos/DeviceBridgeAppTests/WorkspaceModuleChecks.swift \
   -o "$bridge_bin/WorkspaceModuleChecks"

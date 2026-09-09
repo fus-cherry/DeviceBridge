@@ -6,6 +6,7 @@ import Foundation
 struct IOSRunnerWorkspaceChecks {
     @MainActor
     static func main() async throws {
+        try await informationBindingLoss()
         try await preparationPresentation()
         try await overlappingContentActions()
         try await unsupportedAndFirstUseBoundaries()
@@ -81,6 +82,39 @@ struct IOSRunnerWorkspaceChecks {
         try require(!failedModel.isConnectionMaintained, "expired channel still advertised maintenance")
         try await wait { await failedManager.stops > 0 }
         print("PASS: iOS Workspace screenshot isolation, exact capture, stable device binding, metadata-only 10-second renewal, route invalidation, failed heartbeat, Stop and late completion")
+    }
+
+    @MainActor
+    static func informationBindingLoss() async throws {
+        let channel = WorkspacePhoneChannel(clipboardAvailable: true)
+        let manager = WorkspacePhoneManager(channel: channel)
+        let model = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(), iosRunnerFactory: { _ in manager })
+        defer { model.stop() }
+        model.start()
+        try await wait { !model.isRefreshing && model.devices.count == 1 }
+        model.select(model.devices[0].identity)
+        try await wait { model.isScreenshotReady && model.deviceInformation.canRead }
+        try require(model.deviceInformation.report == nil, "selection must not automatically collect parameters")
+        model.deviceInformation.read()
+        try await wait { !model.deviceInformation.isBusy }
+        let report = try model.deviceInformation.report.unwrap("information read did not publish")
+        try require(report.deviceName == "Test iPhone", "runner metadata replaced CoreDevice device name")
+        try require(report.sections.flatMap(\.fields).contains { $0.id == "screen.physicalWidth" && $0.value == .integer(1170) },
+            "runtime screen field was not merged")
+        await channel.holdInformation()
+        model.deviceInformation.read()
+        try await wait { await channel.hasPendingInformation }
+        model.deviceInformation.cancel()
+        await channel.loseInformationBinding()
+        try await wait { !model.isScreenshotReady && !model.isClipboardReady }
+        try require(await channel.hasPendingInformation, "fixture must retain cleanup while readiness is withdrawn")
+        await channel.releaseInformation()
+        try await wait { !model.deviceInformation.isBusy }
+        try require(model.deviceInformation.operation?.state == .cancelled,
+            "late metadata overwrote cancellation")
+        try require(model.deviceInformation.report?.id == report.id,
+            "failed refresh replaced the last complete snapshot")
+        print("PASS: metadata publication, no automatic read, CoreDevice naming, binding loss before pending cleanup and cancellation")
     }
 
     @MainActor
@@ -324,7 +358,18 @@ private actor WorkspacePhoneManager: IOSRunnerManaging {
     func stop() { stops += 1 }
 }
 
-private actor WorkspacePhoneChannel: IOSRunnerScreenshotChannel, IOSRunnerClipboardChannel {
+private actor WorkspacePhoneChannel: IOSRunnerScreenshotChannel, IOSRunnerClipboardChannel, IOSRunnerDeviceInformationChannel {
+    nonisolated let launchID = UUID()
+    private var informationInvalidation: (@Sendable (UUID) -> Void)?
+    private var holdingInformation = false
+    private var pendingInformation: CheckedContinuation<Void, Never>?
+    var hasPendingInformation: Bool { pendingInformation != nil }
+    func holdInformation() { holdingInformation = true }
+    func releaseInformation() { pendingInformation?.resume(); pendingInformation = nil }
+    func loseInformationBinding() { informationInvalidation?(launchID) }
+    func authenticatedDeviceInformationContext() -> HelperSessionContext { context }
+    func registerInvalidationHandler(_ handler: @escaping @Sendable (UUID) -> Void) { informationInvalidation = handler }
+
     static let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1ioAAAAASUVORK5CYII=")!
     private(set) var contentRequests = 0
     private(set) var heartbeats = 0
@@ -349,8 +394,8 @@ private actor WorkspacePhoneChannel: IOSRunnerScreenshotChannel, IOSRunnerClipbo
     func holdCapture() { holdingCapture = true }
     func releaseCapture() { pendingCapture?.resume(); pendingCapture = nil }
     func failHeartbeat() { heartbeatFails = true }
-    let context = HelperSessionContext(sessionNonce: "synthetic-workspace-nonce",
-        helperDeviceID: "synthetic-runner", helperVersion: "1")
+    var context: HelperSessionContext { HelperSessionContext(sessionNonce: "synthetic-workspace-nonce",
+        helperDeviceID: launchID.uuidString, helperVersion: "1") }
     func authenticatedScreenshotContext() -> HelperSessionContext { context }
     func captureScreenshot(_ request: HelperRequest) async throws -> ScreenshotCapturePayload {
         guard request.action == .screenshotCapture, request.helperDeviceID == context.helperDeviceID,
@@ -364,6 +409,18 @@ private actor WorkspacePhoneChannel: IOSRunnerScreenshotChannel, IOSRunnerClipbo
               request.helperDeviceID == context.helperDeviceID else {
             contentRequests += 1
             throw IOSRunnerChannel.Failure.invalidRequest
+        }
+        if request.action == .deviceInformation {
+            contentRequests += 1
+            if holdingInformation { await withCheckedContinuation { pendingInformation = $0 } }
+            return HelperResult(requestID: request.requestID, status: .success, completedAt: Date(), payload: [
+                "systemName": .string("iOS"), "systemVersion": .string("18.3.1"), "modelIdentifier": .string("iPhone-test"),
+                "processorCount": .number(6), "physicalMemoryBytes": .number(6_442_450_944),
+                "screenWidthPixels": .number(1170), "screenHeightPixels": .number(2532),
+                "screenWidthPoints": .number(390), "screenHeightPoints": .number(844),
+                "screenCoordinateBasis": .string("fixedPortrait"), "screenScale": .number(3), "screenNativeScale": .number(3),
+                "maximumFramesPerSecond": .number(60), "totalStorageBytes": .null, "availableStorageBytes": .null,
+                "batteryLevel": .null, "batteryState": .string("unknown")])
         }
         if clipboardAvailable, request.action == .clipboardRead || request.action == .clipboardWrite {
             contentRequests += 1
@@ -393,10 +450,10 @@ private actor WorkspacePhoneChannel: IOSRunnerScreenshotChannel, IOSRunnerClipbo
 }
 
 private actor WorkspacePhoneInventory: HostCommandRunning {
-    private var route = "workspace-coredevice-route"
+    private var route = "11111111-1111-4111-8111-111111111111"
     private let transportType: String
     init(transportType: String = "wired") { self.transportType = transportType }
-    func changeRoute() { route = "workspace-coredevice-route-replaced" }
+    func changeRoute() { route = "22222222-2222-4222-8222-222222222222" }
     func run(_ request: HostCommandRequest) throws -> HostCommandResult {
         if request.arguments == ["devices", "-l"] {
             return HostCommandResult(exitCode: 0, standardOutput: Data("List of devices attached\n".utf8), standardError: Data())
@@ -407,6 +464,14 @@ private actor WorkspacePhoneInventory: HostCommandRunning {
             try Data(json.replacingOccurrences(of: "workspace-coredevice-route", with: route)
                 .replacingOccurrences(of: "\"transportType\":\"wired\"", with: "\"transportType\":\"\(transportType)\"").utf8)
                 .write(to: URL(fileURLWithPath: request.arguments[index + 1]))
+        } else if request.arguments.starts(with: ["devicectl", "device", "info", "details"]),
+                  let index = request.arguments.firstIndex(of: "--json-output") {
+            let details: [String: Any] = ["info": ["outcome": "success"], "result": [
+                "identifier": route,
+                "hardwareProperties": ["udid": "workspace-test-udid", "platform": "iOS", "reality": "physical", "marketingName": "Test iPhone"],
+                "deviceProperties": ["name": "Test iPhone", "osVersionNumber": "18.3.1"],
+                "connectionProperties": ["transportType": transportType, "pairingState": "paired"]]]
+            try JSONSerialization.data(withJSONObject: details).write(to: URL(fileURLWithPath: request.arguments[index + 1]))
         } else if !request.arguments.starts(with: ["devicectl", "device", "info", "details"]) {
             throw IOSRunnerWorkspaceChecks.Failure.failed("unexpected external command")
         }

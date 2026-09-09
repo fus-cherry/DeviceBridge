@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import DeviceBridgeCore
 
 private struct InterfaceLanguageKey: EnvironmentKey {
@@ -39,6 +40,10 @@ struct DeviceBridgeApp: App {
             ))
                 .environment(\.interfaceLanguage, InterfaceLanguage(storedValue: languageValue).resolved())
                 .environment(\.locale, InterfaceLanguage(storedValue: languageValue).locale)
+                .onAppear { model.startAgentAPI() }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    model.stopAgentAPI()
+                }
         }
         .defaultSize(width: 1100, height: 720)
         Settings {

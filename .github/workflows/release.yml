@@ -68,6 +68,11 @@ jobs:
           set -euo pipefail
           bash scripts/check-device-selection.sh
           bash scripts/check-ios-runner-workspace.sh
+          bash scripts/check-workspace-inventory.sh
+          bash scripts/check-workspace-modules.sh
+          bash scripts/check-device-information.sh
+          bash scripts/check-android-shell.sh
+          bash scripts/check-agent-api.sh
       - name: Test and sign Android helper
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}

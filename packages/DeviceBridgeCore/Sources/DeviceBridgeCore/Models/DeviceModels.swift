@@ -270,6 +270,8 @@ public struct OperationFailure: Error, Codable, Hashable, Sendable {
 }
 
 public enum OperationKind: String, Codable, Hashable, Sendable {
+    case deviceInformation
+    case androidShell
     case clipboardRead
     case clipboardWrite
     case screenshot

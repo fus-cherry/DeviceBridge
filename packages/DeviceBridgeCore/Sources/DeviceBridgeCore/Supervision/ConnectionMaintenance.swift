@@ -2,6 +2,8 @@ import Foundation
 
 public protocol ConnectionMaintenanceTransport: Sendable {
     func probe(_ candidate: TransportCandidate) async throws -> Bool
+    /// Read-only liveness on the captured route, without helper forwards or identity authority.
+    func observeCurrentRoute(_ candidate: TransportCandidate) async throws -> Bool
     func discover() async throws -> [TransportCandidate]
     func recoveryEndpoints(for candidate: TransportCandidate) async throws -> [String]
     func connect(endpoint: String) async throws
@@ -84,31 +86,41 @@ public actor ConnectionMaintenance {
     }
 
     private func performTick() async -> ConnectionMaintenanceSnapshot {
-        guard await isCurrent(), let candidate,
-              await store.reserveConnectionProbe(owner: owner, session: session) else { return snapshot }
+        guard await isCurrent(), let candidate, candidate.id == session.transportID else { return snapshot }
+        let exclusive = await store.reserveConnectionProbe(owner: owner, session: session)
+        if !exclusive {
+            guard await store.reserveCurrentRouteObservation(owner: owner, session: session) else { return snapshot }
+        }
         guard await isCurrent() else {
             await store.releaseConnectionProbe(owner: owner)
             return snapshot
         }
-        if session.state == .disconnected {
+        if !exclusive {
+            await checkHealth(candidate, observingOnly: true)
+        } else if session.state == .disconnected {
             await recover(from: candidate)
         } else {
-            await checkHealth(candidate)
+            await checkHealth(candidate, observingOnly: false)
         }
         await store.releaseConnectionProbe(owner: owner)
         return snapshot
     }
 
-    private func checkHealth(_ candidate: TransportCandidate) async {
+    private func checkHealth(_ candidate: TransportCandidate, observingOnly: Bool) async {
         guard policy.beginHealthProbe() == .started else { return }
-        let healthy = (try? await transport.probe(candidate)) == true
+        let healthy: Bool
+        if observingOnly {
+            healthy = (try? await transport.observeCurrentRoute(candidate)) == true
+        } else {
+            healthy = (try? await transport.probe(candidate)) == true
+        }
         guard await isCurrent() else { return }
         let transition = policy.completeHealthProbe(succeeded: healthy)
         if healthy {
             lastSuccess = Date()
             // Wired preference is considered only while the store's between-operation
             // reservation is held. In-flight transfers are never migrated.
-            if candidate.kind == .wifi, let candidates = try? await transport.discover(), await isCurrent() {
+            if !observingOnly, candidate.kind == .wifi, let candidates = try? await transport.discover(), await isCurrent() {
                 for usb in candidates.filter({ $0.kind == .usb }).prefix(8) {
                     guard await isCurrent() else { return }
                     if (try? await transport.verifyIdentity(usb)) == true, await isCurrent() {

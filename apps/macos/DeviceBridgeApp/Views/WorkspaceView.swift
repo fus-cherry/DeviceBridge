@@ -1,3 +1,4 @@
+import AppKit
 import DeviceBridgeCore
 import SwiftUI
 
@@ -147,6 +148,7 @@ struct WorkspaceView: View {
     @Binding var languageValue: String
     @Environment(\.interfaceLanguage) private var language
     @State private var selectedModule: WorkspaceModule = .clipboard
+    @State private var showsAgentGuide = false
 
     var body: some View {
         NavigationSplitView {
@@ -174,6 +176,9 @@ struct WorkspaceView: View {
                     description: Text(language.text("Device tools will appear here."))
                 )
             }
+        }
+        .onChange(of: model.selectedDeviceIdentity) { _, identity in
+            if selectedModule == .shell, identity?.platform != .android { selectedModule = .information }
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -210,6 +215,30 @@ struct WorkspaceView: View {
                 .accessibilityLabel(language.text("Refresh devices"))
                 .accessibilityIdentifier("refresh-devices")
             }
+        }
+        .sheet(isPresented: $showsAgentGuide) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text(language.text("Local Agent API")).font(.title2.bold())
+                    Spacer()
+                    Button(language.text("Done")) { showsAgentGuide = false }
+                }
+                Text(language.text("Send JSON on stdin to the companion CLI while this app is running. Agent actions use the same selected device and operation limits as the interface."))
+                if let path = model.agentCLIPath {
+                    Text(path).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                    Button(language.text("Copy CLI path")) {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(path, forType: .string)
+                    }
+                } else {
+                    Text(language.text("The companion CLI is included in packaged releases. Build devicebridge-agent for development."))
+                }
+                Text(#"{"apiVersion":1,"requestID":"6c53c7c4-f61e-4e93-9d3a-a5368f25ead4","method":"device.current","params":{}}"#)
+                    .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                Text(language.text("Use the returned sessionKey for device.info.read or android.shell.run, then query operation.get. Reuse the same requestID after a lost response; never retry a command with a new ID automatically."))
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            .padding(24).frame(width: 580)
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
@@ -312,13 +341,22 @@ struct WorkspaceView: View {
                 // A GroupBox around these module controls triggers the Computer Use AX-tree trap.
                 // Keep the heading and all controls exposed through a plain layout container.
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(language.text("Automatic readiness"))
+                    HStack {
+                        Text(language.text("Automatic readiness"))
+                        Spacer()
+                        Button(language.text("Agent API")) { showsAgentGuide = true }
+                            .accessibilityIdentifier("agent-api-guide")
+                    }
                     VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 10) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 10)], spacing: 10) {
+                            moduleButton(.information, status: model.deviceInformation.statusText)
                             moduleButton(.clipboard, status: model.clipboardReadinessText)
                             moduleButton(.memory, status: model.memoryReadinessText)
                             moduleButton(.screenshot, status: model.screenshotReadinessText)
                             moduleButton(.files, status: model.fileTransferReadinessText)
+                            if device.identity.platform == .android {
+                                moduleButton(.shell, status: model.androidShell.statusText)
+                            }
                         }
                         Text(language.text("Select a tool to open it. Readiness checks do not read device content."))
                             .font(.caption).foregroundStyle(.secondary)
@@ -338,6 +376,14 @@ struct WorkspaceView: View {
                 }
 
                 VStack(spacing: 0) {
+                    if device.identity.platform == .android {
+                        RetainedModulePane(isSelected: selectedModule == .shell) {
+                            AndroidShellView(model: model.androidShell, actionsAllowed: model.contentActionsAllowed)
+                        }
+                    }
+                    RetainedModulePane(isSelected: selectedModule == .information) {
+                        DeviceInformationView(model: model.deviceInformation, actionsAllowed: model.contentActionsAllowed)
+                    }
                     RetainedModulePane(isSelected: selectedModule == .clipboard) { ClipboardView(model: model) }
                     RetainedModulePane(isSelected: selectedModule == .screenshot) { ScreenshotView(model: model) }
                     RetainedModulePane(isSelected: selectedModule == .files) {
@@ -467,9 +513,11 @@ struct WorkspaceView: View {
 }
 
 private enum WorkspaceModule: String {
-    case clipboard, memory, screenshot, files
+    case information, clipboard, memory, screenshot, files, shell
     var title: String {
         switch self {
+        case .shell: "Android Shell"
+        case .information: "Device information"
         case .clipboard: "Clipboard"
         case .memory: "Memory"
         case .screenshot: "Screenshot"
@@ -478,6 +526,8 @@ private enum WorkspaceModule: String {
     }
     var icon: String {
         switch self {
+        case .shell: "terminal"
+        case .information: "info.circle"
         case .clipboard: "doc.on.clipboard"
         case .memory: "memorychip"
         case .screenshot: "camera"

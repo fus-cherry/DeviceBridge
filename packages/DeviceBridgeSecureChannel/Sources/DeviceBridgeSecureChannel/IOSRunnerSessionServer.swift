@@ -8,6 +8,11 @@ public protocol IOSRunnerClipboardHandling: Sendable {
     func handle(_ request: HelperRequest) async -> HelperResult
 }
 
+/// Read-only platform properties share the existing content admission and cancellation owner.
+public protocol IOSRunnerDeviceInformationHandling: Sendable {
+    func handle(_ request: HelperRequest) async -> HelperResult
+}
+
 /// Capture stays on the phone. The session validates metadata and sends binary chunks only
 /// for the same admitted request; this value never enters logs or launch artifacts.
 public struct IOSRunnerScreenshotResult: Sendable {
@@ -38,7 +43,8 @@ public enum IOSRunnerSessionServer {
     public static func run(stream: PinnedTLSFrameStream, launchID: UUID, maximumDeadline: ContinuousClock.Instant,
                            leaseDuration: Duration = .seconds(30),
                            clipboardHandler: (any IOSRunnerClipboardHandling)? = nil,
-                           screenshotHandler: (any IOSRunnerScreenshotHandling)? = nil) async throws -> Exit {
+                           screenshotHandler: (any IOSRunnerScreenshotHandling)? = nil,
+                           deviceInformationHandler: (any IOSRunnerDeviceInformationHandling)? = nil) async throws -> Exit {
         let started = ContinuousClock.now
         guard maximumDeadline > started else {
             await stream.close()
@@ -66,6 +72,7 @@ public enum IOSRunnerSessionServer {
             var actions: Set<HelperAction> = [.identity, .stop]
             if clipboardHandler != nil { actions.formUnion([.clipboardRead, .clipboardWrite]) }
             if screenshotHandler != nil { actions.insert(.screenshotCapture) }
+            if deviceInformationHandler != nil { actions.insert(.deviceInformation) }
             let session = try await IOSRunnerIdentityHandshake.acceptRunner(stream: stream, launchID: launchID,
                 helperBuild: helperBuild, allowedActions: actions, timeout: deadlines.timeout(at: .now))
             try Task.checkCancellation()
@@ -141,7 +148,7 @@ public enum IOSRunnerSessionServer {
                     // Stop invalidates platform work at admission, before acknowledgement or
                     // cleanup can suspend. Keep the deadline for the bounded Stop reply.
                     if request.action == .stop { content?.operation.cancel() }
-                    if request.action == .clipboardRead || request.action == .clipboardWrite || request.action == .screenshotCapture {
+                    if request.action == .clipboardRead || request.action == .clipboardWrite || request.action == .screenshotCapture || request.action == .deviceInformation {
                         try Task.checkCancellation()
                         guard content == nil else { throw Failure.rejected }
                         let admittedAt = Date()
@@ -155,6 +162,8 @@ public enum IOSRunnerSessionServer {
                             let response: IOSRunnerScreenshotResult
                             if request.action == .screenshotCapture, let screenshotHandler {
                                 response = await screenshotHandler.capture(request)
+                            } else if request.action == .deviceInformation, let deviceInformationHandler {
+                                response = IOSRunnerScreenshotResult(result: await deviceInformationHandler.handle(request))
                             } else if let clipboardHandler {
                                 response = IOSRunnerScreenshotResult(result: await clipboardHandler.handle(request))
                             } else { return }
@@ -224,7 +233,7 @@ public enum IOSRunnerSessionServer {
               request.createdAt < request.expiresAt, request.expiresAt > now,
               request.expiresAt.timeIntervalSince(request.createdAt) <= 30 else { throw Failure.rejected }
         switch request.action {
-        case .identity, .stop, .clipboardRead, .screenshotCapture:
+        case .identity, .stop, .clipboardRead, .screenshotCapture, .deviceInformation:
             guard request.payload.isEmpty else { throw Failure.rejected }
         case .clipboardWrite:
             guard let text = request.payload["text"]?.stringValue,
@@ -248,6 +257,9 @@ public enum IOSRunnerSessionServer {
             guard let payload = result.payload, Set(payload.keys) == ["text"],
                   let text = payload["text"]?.stringValue,
                   text.utf8.count <= HelperWireCodec.maximumClipboardUTF8Bytes else { throw Failure.rejected }
+        } else if request.action == .deviceInformation {
+            guard let payload = result.payload else { throw Failure.rejected }
+            _ = try DeviceRuntimeInformation(payload: payload)
         } else if request.action == .screenshotCapture {
             guard let payload = result.payload else { throw Failure.rejected }
             _ = try IOSRunnerScreenshotWire.Descriptor(payload: payload)

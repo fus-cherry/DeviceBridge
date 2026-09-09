@@ -14,6 +14,136 @@ private struct ChannelScreenshotFixture: IOSRunnerScreenshotHandling {
 }
 
 @Suite struct IOSRunnerChannelTests {
+    @Test func cancellingAdmittedMetadataNotifiesBeforeCleanupAndBusyDoesNotInvalidate() async throws {
+        let fixture = try await ChannelFixture(helperBuild: IOSRunnerSessionServer.helperBuild)
+        let sampling = ChannelReplyGate(), cleanup = ChannelReplyGate()
+        await fixture.endpoint.suspendCleanup(on: cleanup)
+        let notice = ChannelInvalidationNotice(), completion = ChannelInvalidationNotice()
+        let server = Task { try await IOSRunnerSessionServer.run(stream: fixture.listener.accept(), launchID: fixture.launch.id,
+            maximumDeadline: .now.advanced(by: .seconds(5)), deviceInformationHandler: ChannelGatedMetadataFixture(gate: sampling)) }
+        var sending: Task<Void, Never>?
+        do {
+            _ = try await fixture.channel.open(launch: fixture.launch, process: ChannelProcess())
+            await fixture.channel.registerInvalidationHandler { notice.append($0) }
+            let context = try await fixture.channel.authenticatedDeviceInformationContext()
+            var request = metadataRequest(context); request.action = .deviceInformation
+            let admitted = request
+            sending = Task {
+                _ = try? await fixture.channel.send(admitted)
+                completion.append(admitted.requestID)
+            }
+            try await waitForMetadataGate(sampling)
+            var second = metadataRequest(context); second.action = .deviceInformation
+            await #expect(throws: IOSRunnerChannel.Failure.operationInProgress) { try await fixture.channel.send(second) }
+            #expect(notice.values.isEmpty)
+            #expect(try await fixture.channel.send(metadataRequest(context)).status == .success)
+            sending?.cancel()
+            try await waitForMetadataGate(cleanup)
+            #expect(notice.values == [fixture.launch.id])
+            #expect(completion.values.isEmpty)
+            await #expect(throws: IOSRunnerChannel.Failure.unavailable) { try await fixture.channel.authenticatedDeviceInformationContext() }
+            await sampling.release(); await cleanup.release(); await sending?.value
+            #expect(completion.values == [admitted.requestID])
+            await fixture.channel.close(); await fixture.listener.close(); server.cancel(); _ = try? await server.value
+        } catch {
+            await sampling.release(); await cleanup.release(); sending?.cancel()
+            await fixture.channel.close(); await fixture.listener.close(); server.cancel(); _ = try? await server.value
+            throw error
+        }
+    }
+
+    @Test func malformedMetadataSuccessInvalidatesHostBinding() async throws {
+        let fixture = try await ChannelFixture()
+        let notice = ChannelInvalidationNotice()
+        let server = Task {
+            let stream = try await fixture.listener.accept()
+            _ = try await IOSRunnerIdentityHandshake.acceptRunner(stream: stream, launchID: fixture.launch.id,
+                helperBuild: "runner-fixture-v1", allowedActions: [.identity, .stop, .deviceInformation])
+            let request = try HelperWireCodec().decodeRequest(await stream.readFrame(timeout: 2))
+            try await stream.writeFrame(HelperWireCodec().encode(HelperResult(requestID: request.requestID,
+                status: .success, completedAt: Date(), payload: [:])))
+            _ = try? await stream.readFrame(timeout: 2)
+            await stream.close()
+        }
+        do {
+            _ = try await fixture.channel.open(launch: fixture.launch, process: ChannelProcess())
+            await fixture.channel.registerInvalidationHandler { notice.append($0) }
+            var request = metadataRequest(try await fixture.channel.authenticatedDeviceInformationContext()); request.action = .deviceInformation
+            await #expect(throws: IOSRunnerChannel.Failure.invalidReply) { try await fixture.channel.send(request) }
+            #expect(notice.values == [fixture.launch.id])
+            try await server.value
+        } catch {
+            await fixture.channel.close(); await fixture.listener.close(); server.cancel(); _ = try? await server.value
+            throw error
+        }
+    }
+
+    @Test func metadataRequiresNegotiationAndDoesNotActivateForeground() async throws {
+        let activation = CountingMetadataActivation()
+        let fixture = try await ChannelFixture(helperBuild: IOSRunnerSessionServer.helperBuild, foreground: activation)
+        let server = Task { try await IOSRunnerSessionServer.run(stream: fixture.listener.accept(), launchID: fixture.launch.id,
+            maximumDeadline: .now.advanced(by: .seconds(5)), deviceInformationHandler: ChannelMetadataFixture()) }
+        do {
+            _ = try await fixture.channel.open(launch: fixture.launch, process: ChannelProcess())
+            let typed: any IOSRunnerDeviceInformationChannel = fixture.channel
+            let context = try await typed.authenticatedDeviceInformationContext()
+            var request = metadataRequest(context); request.action = .deviceInformation
+            let result = try await typed.send(request)
+            #expect(try DeviceRuntimeInformation(payload: result.payload ?? [:]).processorCount == 6)
+            #expect(await activation.count == 0)
+            var stop = metadataRequest(context); stop.action = .stop
+            _ = try await fixture.channel.send(stop)
+            #expect(try await server.value == .stopped)
+        } catch {
+            await fixture.channel.close(); await fixture.listener.close(); server.cancel(); _ = try? await server.value
+            throw error
+        }
+    }
+
+    @Test func unsupportedMetadataDoesNotInvalidateAuthenticatedChannel() async throws {
+        let fixture = try await ChannelFixture()
+        let server = Task { try await fixture.serveMetadata(requests: 1, allowedActions: [.identity, .stop]) }
+        let notice = ChannelInvalidationNotice()
+        do {
+            _ = try await fixture.channel.open(launch: fixture.launch, process: ChannelProcess())
+            await fixture.channel.registerInvalidationHandler { notice.append($0) }
+            await #expect(throws: IOSRunnerChannel.Failure.unavailable) { try await fixture.channel.authenticatedDeviceInformationContext() }
+            #expect(notice.values.isEmpty)
+            _ = try await fixture.channel.authenticatedContext()
+            var stop = metadataRequest(try await fixture.channel.authenticatedContext()); stop.action = .stop
+            _ = try await fixture.channel.send(stop)
+            try await server.value
+            #expect(notice.values == [fixture.launch.id])
+        } catch {
+            await fixture.channel.close(); await fixture.listener.close(); server.cancel(); _ = try? await server.value
+            throw error
+        }
+    }
+
+    @Test func invalidationIsDeliveredBeforeSuspendedCleanupAndLateRegistrationIsImmediate() async throws {
+        let fixture = try await ChannelFixture()
+        let cleanupGate = ChannelReplyGate()
+        await fixture.endpoint.suspendCleanup(on: cleanupGate)
+        let notice = ChannelInvalidationNotice()
+        await fixture.channel.registerInvalidationHandler { notice.append($0) }
+        let closing = Task { await fixture.channel.close() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while !(await cleanupGate.entered), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(2)) }
+        #expect(await cleanupGate.entered)
+        #expect(notice.values == [fixture.launch.id])
+        #expect(fixture.channel.launchID == fixture.launch.id)
+        let late = ChannelInvalidationNotice()
+        await fixture.channel.registerInvalidationHandler { late.append($0) }
+        #expect(late.values == [fixture.launch.id])
+        await cleanupGate.release(); await closing.value
+        await fixture.channel.close()
+        #expect(late.values == [fixture.launch.id])
+        let closed = ChannelInvalidationNotice()
+        await fixture.channel.registerInvalidationHandler { closed.append($0) }
+        #expect(closed.values == [fixture.launch.id])
+        await fixture.listener.close()
+    }
+
     @Test(arguments: [0, 1, 2, 3])
     func clipboardReadinessRequiresBothNegotiatedActions(_ mask: Int) async throws {
         let fixture = try await ChannelFixture()
@@ -746,7 +876,9 @@ private actor LocalChannelEndpoint: IOSRunnerEndpointOpening {
     func open(process: any IOSRunnerProcessOwning) async throws -> IOSRunnerUSBEndpoint.PinnedEndpoint {
         .init(port: port, runnerCertificateDER: certificate)
     }
-    func close() { closeCount += 1 }
+    private var cleanupGate: ChannelReplyGate?
+    func suspendCleanup(on gate: ChannelReplyGate) { cleanupGate = gate }
+    func close() async { closeCount += 1; let gate = cleanupGate; cleanupGate = nil; await gate?.wait() }
 }
 
 private actor SuspendedChannelEndpoint: IOSRunnerEndpointOpening {
@@ -820,5 +952,41 @@ private struct ChannelFailureAfterGate: IOSRunnerForegroundActivating {
     func activate(launch: IOSRunnerLaunch, deadline: ContinuousClock.Instant) async throws {
         await gate.activate(launch: launch, deadline: deadline)
         throw IOSRunnerForegroundActivator.Failure.timedOut
+    }
+}
+
+private final class ChannelInvalidationNotice: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [UUID] = []
+    var values: [UUID] { lock.withLock { storage } }
+    func append(_ id: UUID) { lock.withLock { storage.append(id) } }
+}
+private actor CountingMetadataActivation: IOSRunnerForegroundActivating {
+    private(set) var count = 0
+    func activate(launch: IOSRunnerLaunch, deadline: ContinuousClock.Instant) { count += 1 }
+}
+private struct ChannelMetadataFixture: IOSRunnerDeviceInformationHandling {
+    func handle(_ request: HelperRequest) async -> HelperResult {
+        HelperResult(requestID: request.requestID, status: .success, completedAt: Date(), payload: [
+            "systemName": .string("iOS"), "systemVersion": .string("26.6"), "modelIdentifier": .string("iPhone17,1"),
+            "processorCount": .number(6), "physicalMemoryBytes": .number(8_589_934_592),
+            "screenWidthPixels": .null, "screenHeightPixels": .null, "screenWidthPoints": .null, "screenHeightPoints": .null,
+            "screenCoordinateBasis": .null, "screenScale": .null, "screenNativeScale": .null, "maximumFramesPerSecond": .null,
+            "totalStorageBytes": .null, "availableStorageBytes": .null, "batteryLevel": .null, "batteryState": .string("unknown")])
+    }
+}
+
+private struct ChannelGatedMetadataFixture: IOSRunnerDeviceInformationHandling {
+    let gate: ChannelReplyGate
+    func handle(_ request: HelperRequest) async -> HelperResult {
+        await gate.wait()
+        return await ChannelMetadataFixture().handle(request)
+    }
+}
+private func waitForMetadataGate(_ gate: ChannelReplyGate) async throws {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+    while !(await gate.entered) {
+        guard ContinuousClock.now < deadline else { throw IOSRunnerChannel.Failure.unavailable }
+        try await Task.sleep(for: .milliseconds(2))
     }
 }

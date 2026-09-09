@@ -737,7 +737,7 @@ private actor GatedScreenshotFixture: IOSRunnerScreenshotHandling {
     func release() { waiting?.resume(); waiting = nil }
 }
 
-private struct RunningSession: Sendable {
+struct RunningSession: Sendable {
     let host: PinnedTLSFrameStream
     let session: IOSRunnerIdentityHandshake.Session
     let task: Task<IOSRunnerSessionServer.Exit, Error>
@@ -751,16 +751,17 @@ private struct RunningSession: Sendable {
 
     static func start(lease: Duration = .seconds(2), maximum: Duration = .seconds(3),
                       clipboardHandler: (any IOSRunnerClipboardHandling)? = nil,
-                      screenshotHandler: (any IOSRunnerScreenshotHandling)? = nil) async throws -> RunningSession {
+                      screenshotHandler: (any IOSRunnerScreenshotHandling)? = nil,
+                      deviceInformationHandler: (any IOSRunnerDeviceInformationHandling)? = nil) async throws -> RunningSession {
         let (host, runner) = try await pair()
         let launch = UUID()
         let maximumDeadline = ContinuousClock.now.advanced(by: maximum)
         let task = Task { try await IOSRunnerSessionServer.run(stream: runner, launchID: launch, maximumDeadline: maximumDeadline,
-            leaseDuration: lease, clipboardHandler: clipboardHandler, screenshotHandler: screenshotHandler) }
+            leaseDuration: lease, clipboardHandler: clipboardHandler, screenshotHandler: screenshotHandler, deviceInformationHandler: deviceInformationHandler) }
         do {
             let session = try await IOSRunnerIdentityHandshake.openHost(stream: host, launchID: launch,
                 helperBuild: "devicebridge-ios-runner-v1", requiredActions: [.identity, .stop])
-            if clipboardHandler == nil && screenshotHandler == nil { #expect(session.allowedActions == [.identity, .stop]) }
+            if clipboardHandler == nil && screenshotHandler == nil && deviceInformationHandler == nil { #expect(session.allowedActions == [.identity, .stop]) }
             return RunningSession(host: host, session: session, task: task)
         } catch {
             task.cancel(); _ = try? await task.value

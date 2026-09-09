@@ -1,3 +1,4 @@
+import DeviceBridgeProtocol
 import Foundation
 import Testing
 @testable import DeviceBridgeCore
@@ -176,6 +177,104 @@ struct ConnectionMaintenanceTests {
         #expect(await fixture.transport.connects.count == attempts)
     }
 
+    @Test("Shell permits only current-route observation, including draining, without USB migration")
+    func shellObservation() async throws {
+        let fixture = try await Fixture()
+        await fixture.transport.setCandidates([try fixture.candidate(id: "usb", kind: .usb)], verified: ["usb"])
+        let shell = try await fixture.store.beginOperation(.androidShell)
+        _ = await fixture.maintenance.tick()
+        #expect(await fixture.transport.observations == ["11"])
+        #expect(await fixture.transport.probes.isEmpty)
+        #expect(await fixture.transport.externalCalls.isEmpty)
+        #expect(await fixture.transport.verified.isEmpty)
+        #expect(await fixture.store.snapshot().session == fixture.session)
+        await fixture.store.invalidateOperation(shell, reason: .cancelled)
+        _ = await fixture.maintenance.tick()
+        #expect(await fixture.transport.observations == ["11", "11"])
+        #expect(await fixture.store.finishShellOperation(shell, terminal: .cancelled))
+        _ = await fixture.maintenance.tick()
+        #expect(await fixture.store.snapshot().session?.transportID == "usb")
+    }
+
+    @Test("legacy work still excludes all probes even alongside Shell")
+    func legacyWorkExcludesObservation() async throws {
+        let fixture = try await Fixture()
+        let shell = try await fixture.store.beginOperation(.androidShell)
+        let legacy = try await fixture.store.beginOperation(.fileReceive)
+        _ = await fixture.maintenance.tick()
+        #expect(await fixture.transport.observations.isEmpty)
+        #expect(await fixture.transport.probes.isEmpty)
+        await fixture.store.finishOperation(legacy)
+        _ = await fixture.maintenance.tick()
+        #expect(await fixture.transport.observations == ["11"])
+        #expect(await fixture.store.finishShellOperation(shell, terminal: .remoteExit))
+    }
+
+    @Test("failed Shell observations invalidate but recovery waits for actual cleanup")
+    func shellFailureWaitsForCleanup() async throws {
+        let fixture = try await Fixture()
+        let shell = try await fixture.store.beginOperation(.androidShell)
+        await fixture.transport.setHealthy(false)
+        _ = await fixture.maintenance.tick()
+        _ = await fixture.maintenance.tick()
+        #expect(await fixture.store.snapshot().session?.state == .disconnected)
+        #expect(await !fixture.store.canPublish(shell))
+        _ = await fixture.maintenance.tick()
+        #expect(await fixture.transport.externalCalls.isEmpty)
+        #expect(await fixture.store.finishShellOperation(shell, terminal: .failure) == false)
+        _ = await fixture.maintenance.tick()
+        #expect(await !fixture.transport.externalCalls.isEmpty)
+    }
+
+    @Test("cleanup finishing during an observation cannot turn that reservation into route migration")
+    func observationNeverUpgradesReservation() async throws {
+        let fixture = try await Fixture()
+        await fixture.transport.setCandidates([try fixture.candidate(id: "usb", kind: .usb)], verified: ["usb"])
+        let shell = try await fixture.store.beginOperation(.androidShell)
+        let gate = MaintenanceGate()
+        await fixture.transport.setGate(gate)
+        let tick = Task { await fixture.maintenance.tick() }
+        await gate.waitUntilEntered()
+        #expect(await fixture.store.finishShellOperation(shell, terminal: .remoteExit))
+        await gate.release()
+        _ = await tick.value
+        #expect(await fixture.store.snapshot().session == fixture.session)
+        #expect(await fixture.transport.externalCalls.isEmpty)
+    }
+
+    @Test("late current-route failure cannot invalidate a new selected session")
+    func staleObservation() async throws {
+        let fixture = try await Fixture()
+        let shell = try await fixture.store.beginOperation(.androidShell)
+        await fixture.transport.setHealthy(false)
+        _ = await fixture.maintenance.tick()
+        let gate = MaintenanceGate()
+        await fixture.transport.setGate(gate)
+        let tick = Task { await fixture.maintenance.tick() }
+        await gate.waitUntilEntered()
+        let other = try fixture.otherDevice()
+        await fixture.store.replaceInventory([other])
+        let next = try await fixture.store.select(other.identity)
+        await gate.release()
+        _ = await tick.value
+        #expect(await fixture.store.snapshot().session == next.session)
+        #expect(await !fixture.store.finishShellOperation(shell, terminal: .failure))
+    }
+
+    @Test("real Android health observation with a trusted helper never creates a forward")
+    func androidObservationUsesOnlyGetState() async throws {
+        let fixture = try await Fixture()
+        let candidate = try #require(fixture.device.candidates.first)
+        let runner = CurrentRouteCommandFixture()
+        let context = HelperSessionContext(sessionNonce: "fixture-nonce", helperDeviceID: "fixture-helper",
+            helperVersion: "0.3.0")
+        let transport = AndroidConnectionTransport(adbURL: URL(fileURLWithPath: "/fixture/adb"),
+            runner: runner, context: context, selectedCandidate: candidate,
+            channelFactory: { _ in throw AndroidRecoveryError.commandFailed })
+        #expect(try await transport.observeCurrentRoute(candidate))
+        #expect(await runner.arguments == [["-t", "11", "get-state"]])
+    }
+
     private struct Fixture {
         let store = DeviceSessionStore()
         let transport = MaintenanceTransportFixture()
@@ -212,6 +311,7 @@ struct ConnectionMaintenanceTests {
 
 private actor MaintenanceTransportFixture: ConnectionMaintenanceTransport {
     private(set) var probes: [String] = []
+    private(set) var observations: [String] = []
     private(set) var connects: [String] = []
     private(set) var verified: [String] = []
     private var healthy = true
@@ -237,6 +337,11 @@ private actor MaintenanceTransportFixture: ConnectionMaintenanceTransport {
     }
     func probe(_ candidate: TransportCandidate) async throws -> Bool {
         probes.append(candidate.id)
+        await gate?.enter()
+        return healthy
+    }
+    func observeCurrentRoute(_ candidate: TransportCandidate) async throws -> Bool {
+        observations.append(candidate.id)
         await gate?.enter()
         return healthy
     }
@@ -272,4 +377,15 @@ private actor MaintenanceGate {
         if !entered { await withCheckedContinuation { entryWaiter = $0 } }
     }
     func release() { released = true; releaseWaiter?.resume(); releaseWaiter = nil }
+}
+
+private actor CurrentRouteCommandFixture: HostCommandRunning {
+    private(set) var arguments: [[String]] = []
+    func run(_ request: HostCommandRequest) async throws -> HostCommandResult {
+        arguments.append(request.arguments)
+        guard request.arguments == ["-t", "11", "get-state"] else {
+            throw AndroidRecoveryError.commandFailed
+        }
+        return HostCommandResult(exitCode: 0, standardOutput: Data("device\n".utf8), standardError: Data())
+    }
 }

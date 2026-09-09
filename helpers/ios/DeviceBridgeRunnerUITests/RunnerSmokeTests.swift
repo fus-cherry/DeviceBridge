@@ -300,7 +300,7 @@ final class RunnerSmokeTests: XCTestCase {
                     // executor delay. The entry timer also remains live until unified cleanup.
                     _ = try await IOSRunnerSessionServer.run(stream: stream, launchID: configuration.launchID,
                         maximumDeadline: deadline, clipboardHandler: clipboardHandler,
-                        screenshotHandler: RunnerScreenshotHandler())
+                        screenshotHandler: RunnerScreenshotHandler(), deviceInformationHandler: DeviceInformationCommands())
                     try Task.checkCancellation()
                     completed = true
                 } catch { }

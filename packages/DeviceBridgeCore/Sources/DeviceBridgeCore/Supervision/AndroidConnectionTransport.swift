@@ -34,6 +34,12 @@ public actor AndroidConnectionTransport: ConnectionMaintenanceTransport {
         return try await commandReady(candidate)
     }
 
+    public func observeCurrentRoute(_ candidate: TransportCandidate) async throws -> Bool {
+        // This reports only current-route liveness. Shell attribution and epoch validation
+        // remain owned by its fixed native connection; no forward or recovery runs here.
+        try await commandReady(candidate)
+    }
+
     private func commandReady(_ candidate: TransportCandidate) async throws -> Bool {
         guard candidate.source == .adb else { return false }
         let result = try await run(["-t", candidate.id, "get-state"])

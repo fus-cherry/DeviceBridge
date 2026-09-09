@@ -5,7 +5,7 @@ import DeviceBridgeProtocol
 /// Application identity is additional to the stream's mutual TLS pin verification.
 public enum IOSRunnerIdentityHandshake {
     public enum Failure: Error, Equatable, Sendable { case rejected }
-    private static let supportedActions: Set<HelperAction> = [.identity, .stop, .clipboardRead, .clipboardWrite, .screenshotCapture]
+    private static let supportedActions: Set<HelperAction> = [.identity, .stop, .clipboardRead, .clipboardWrite, .screenshotCapture, .deviceInformation]
 
     public struct Session: Sendable {
         public let bootstrapRequestID: UUID

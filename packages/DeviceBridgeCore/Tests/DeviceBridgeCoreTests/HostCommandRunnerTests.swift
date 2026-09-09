@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import Darwin
 @testable import DeviceBridgeCore
 
 @Suite("Host command boundary", .serialized)
@@ -126,5 +127,109 @@ struct HostCommandRunnerTests {
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
+    }
+
+    @Test("the total deadline includes pipe EOF after the direct process exits")
+    func inheritedPipeDescriptorsCannotOutliveDeadline() async {
+        let started = ContinuousClock.now
+
+        do {
+            _ = try await runner.run(HostCommandRequest(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: ["-c", "printf inherited-out; printf inherited-err >&2; (trap '' HUP TERM; sleep 2) & exit 0"],
+                timeout: .milliseconds(100)
+            ))
+            Issue.record("Expected the inherited pipe descriptors to reach the total deadline")
+        } catch let error as HostCommandError {
+            #expect(error == .timedOut)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(started.duration(to: .now) < .seconds(1))
+    }
+
+    @Test("timeout escalates termination for the owned child that ignores SIGTERM")
+    func timeoutKillsOwnedChildAfterGrace() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("devicebridge-host-command-\(UUID().uuidString).pid")
+        defer { try? FileManager.default.removeItem(at: marker) }
+        let started = ContinuousClock.now
+
+        do {
+            _ = try await runner.run(HostCommandRequest(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: ["-c", "trap '' TERM; printf '%s' \"$$\" > \"$0\"; sleep 2", marker.path],
+                timeout: .milliseconds(100)
+            ))
+            Issue.record("Expected timeout")
+        } catch let error as HostCommandError {
+            #expect(error == .timedOut)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(started.duration(to: .now) < .seconds(1))
+        let pid = try #require(processID(in: marker))
+        #expect(!processExists(pid), "The runner returned while its directly owned child was still alive")
+    }
+
+    @Test("cancellation escalates and finishes cleanup for both output streams")
+    func cancellationCleansBothStreamsAndOwnedChild() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("devicebridge-host-command-\(UUID().uuidString).pid")
+        defer { try? FileManager.default.removeItem(at: marker) }
+        let task = Task {
+            try await runner.run(HostCommandRequest(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [
+                    "-c",
+                    "trap '' TERM; printf cancellation-out; printf cancellation-err >&2; printf '%s' \"$$\" > \"$0\"; sleep 2",
+                    marker.path,
+                ],
+                timeout: .seconds(5)
+            ))
+        }
+        try await waitForFile(marker)
+        let startedCancellation = ContinuousClock.now
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("Expected cancellation")
+        } catch let error as HostCommandError {
+            #expect(error == .cancelled)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(startedCancellation.duration(to: .now) < .seconds(1))
+        let pid = try #require(processID(in: marker))
+        #expect(!processExists(pid), "Cancellation returned while its directly owned child was still alive")
+    }
+
+    private func waitForFile(_ url: URL) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while !FileManager.default.fileExists(atPath: url.path) {
+            guard ContinuousClock.now < deadline else {
+                throw FixtureError.markerWasNotWritten
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    private func processID(in url: URL) -> pid_t? {
+        guard let contents = try? String(contentsOf: url, encoding: .utf8),
+              let processID = pid_t(contents) else { return nil }
+        return processID
+    }
+
+    private func processExists(_ processID: pid_t) -> Bool {
+        errno = 0
+        return Darwin.kill(processID, 0) == 0 || errno != ESRCH
+    }
+
+    private enum FixtureError: Error {
+        case markerWasNotWritten
     }
 }

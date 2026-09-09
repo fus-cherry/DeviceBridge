@@ -14,6 +14,7 @@ extension IOSRunnerUSBEndpoint: IOSRunnerEndpointOpening {}
 public actor IOSRunnerChannel: IOSRunnerChannelCandidate, HelperRequestSending, IOSRunnerClipboardChannel {
     public enum Failure: Error, Equatable, Sendable { case unavailable, invalidRequest, invalidReply, operationInProgress, cleanupFailed }
     public enum ScreenshotFailure: Error, Equatable, Sendable { case status(HelperResultStatus) }
+    public nonisolated var launchID: UUID { launch.id }
     public nonisolated let publicHostCertificateDER: Data
     private let launch: IOSRunnerLaunch
     private let identity: EphemeralTLSIdentity
@@ -28,6 +29,7 @@ public actor IOSRunnerChannel: IOSRunnerChannelCandidate, HelperRequestSending, 
         case closed
     }
     private var phase = Phase.idle
+    private var invalidationHandler: (@Sendable (UUID) -> Void)?
     private var stream: PinnedTLSFrameStream?
     private var opening: Task<Void, any Error>?
     private var runnerProcess: (any IOSRunnerProcessOwning)?
@@ -104,6 +106,22 @@ public actor IOSRunnerChannel: IOSRunnerChannelCandidate, HelperRequestSending, 
               session.allowedActions.contains(.clipboardRead),
               session.allowedActions.contains(.clipboardWrite) else { throw Failure.unavailable }
         return try authenticatedContext()
+    }
+
+    public func authenticatedDeviceInformationContext() throws -> HelperSessionContext {
+        guard case .connected(let session) = phase, session.allowedActions.contains(.deviceInformation) else {
+            throw Failure.unavailable
+        }
+        return try authenticatedContext()
+    }
+
+    /// One binding observer. It must not block or synchronously wait for channel teardown.
+    /// Registration after logical invalidation immediately receives this original launch ID.
+    public func registerInvalidationHandler(_ handler: @escaping @Sendable (UUID) -> Void) {
+        switch phase {
+        case .closing, .closed: handler(launch.id)
+        default: invalidationHandler = handler
+        }
     }
 
     public func captureScreenshot(_ request: HelperRequest) async throws -> ScreenshotCapturePayload {
@@ -203,13 +221,18 @@ public actor IOSRunnerChannel: IOSRunnerChannelCandidate, HelperRequestSending, 
             _ = await tlsClosed
         }
         phase = .closing(cleanup)
+        // This actor turn publishes logical invalidation before the inherited cleanup task
+        // can suspend on endpoint/TLS teardown or pending callers regain their continuations.
+        let observer = invalidationHandler
+        invalidationHandler = nil
+        observer?(launch.id)
         await cleanup.value
         phase = .closed
         for entry in requests { entry.continuation.resume(throwing: completionFailure) }
     }
 
     private func sameSlot(_ lhs: HelperAction, _ rhs: HelperAction) -> Bool {
-        let content: Set<HelperAction> = [.clipboardRead, .clipboardWrite, .screenshotCapture]
+        let content: Set<HelperAction> = [.clipboardRead, .clipboardWrite, .screenshotCapture, .deviceInformation]
         return lhs == rhs || (content.contains(lhs) && content.contains(rhs))
     }
 
@@ -423,7 +446,7 @@ public actor IOSRunnerChannel: IOSRunnerChannelCandidate, HelperRequestSending, 
               request.createdAt < request.expiresAt, request.expiresAt > now,
               request.expiresAt.timeIntervalSince(request.createdAt) <= 30 else { throw Failure.invalidRequest }
         switch request.action {
-        case .identity, .stop, .clipboardRead, .screenshotCapture:
+        case .identity, .stop, .clipboardRead, .screenshotCapture, .deviceInformation:
             guard request.payload.isEmpty else { throw Failure.invalidRequest }
         case .clipboardWrite:
             guard let text = request.payload["text"]?.stringValue,
@@ -455,6 +478,12 @@ public actor IOSRunnerChannel: IOSRunnerChannelCandidate, HelperRequestSending, 
         case .clipboardWrite:
             if result.status == .success {
                 guard result.payload == ["written": .bool(true)] else { throw Failure.invalidReply }
+            }
+        case .deviceInformation:
+            if result.status == .success {
+                guard let payload = result.payload else { throw Failure.invalidReply }
+                do { _ = try DeviceRuntimeInformation(payload: payload) }
+                catch { throw Failure.invalidReply }
             }
         case .screenshotCapture:
             if result.status == .success {

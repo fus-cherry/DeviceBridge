@@ -1,5 +1,7 @@
 # DeviceBridge
 
+> **AI 生成声明：本项目由 AI 自主生成。**
+
 面向 Flutter 开发者的原生 macOS 设备调试工具。在一个窗口中连接 Android 与 iPhone，处理剪切板、截图、图片、文件和 Flutter 内存数据；被调试的 Flutter 项目无需添加依赖或修改代码。
 
 [下载 Release](https://github.com/fus-cherry/DeviceBridge/releases) · [开发与测试](docs/development.md) · [自动构建与发布](docs/releasing.md) · [验收指南](specs/001-device-debug-bridge/quickstart.md)
@@ -54,6 +56,7 @@ Android helper APK 已内置，应用按需安装或更新，无需使用者自�
 
 ## 文档导航
 
+- [Agent API 与 CLI](docs/agent-api.md)：本机 JSON 调用、五个方法、会话与重试规则、输出结构及限额。
 - [开发与测试](docs/development.md)：工具链、源码构建、测试边界及手动 Developer ID / 公证流程。
 - [自动构建与发布](docs/releasing.md)：GitHub Actions、签名配置、版本标签与产物下载。
 - [Quickstart / 验收指南](specs/001-device-debug-bridge/quickstart.md)：可执行检查和物理设备验证条件。

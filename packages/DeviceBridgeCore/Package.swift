@@ -7,6 +7,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "DeviceBridgeCore", targets: ["DeviceBridgeCore"]),
+        .executable(name: "devicebridge-agent", targets: ["DeviceBridgeAgentCLI"]),
         // Headless checks link the same transitive modules without a hand-maintained object list.
         .library(name: "DeviceBridgeCoreChecks", type: .static, targets: ["DeviceBridgeCore"]),
     ],
@@ -15,6 +16,7 @@ let package = Package(
         .package(path: "../DeviceBridgeSecureChannel"),
     ],
     targets: [
+        .executableTarget(name: "DeviceBridgeAgentCLI", dependencies: ["DeviceBridgeCore"]),
         .target(name: "DeviceBridgeCore", dependencies: [
             .product(name: "DeviceBridgeProtocol", package: "DeviceBridgeProtocol"),
             .product(name: "DeviceBridgeSecureChannel", package: "DeviceBridgeSecureChannel"),

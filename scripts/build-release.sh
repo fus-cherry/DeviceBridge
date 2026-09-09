@@ -23,6 +23,7 @@ fi
 mkdir -p "$release_output" "$release_root/.build"
 release_work=$(mktemp -d "$release_root/.build/release-$release_version-$release_build.XXXXXX")
 release_app="$release_work/derived/Build/Products/Release/DeviceBridge.app"
+release_agent_build="$release_work/agent-build"
 xcodebuild build -project apps/macos/DeviceBridge.xcodeproj \
     -scheme DeviceBridge -configuration Release \
     -destination 'generic/platform=macOS' -derivedDataPath "$release_work/derived" \
@@ -30,6 +31,21 @@ xcodebuild build -project apps/macos/DeviceBridge.xcodeproj \
     ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- \
     DEVELOPMENT_TEAM= CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
     MARKETING_VERSION="$release_version" CURRENT_PROJECT_VERSION="$release_build"
+swift build --package-path packages/DeviceBridgeCore \
+    --scratch-path "$release_agent_build" --configuration release \
+    --triple arm64-apple-macosx14.0 --only-use-versions-from-resolved-file \
+    --product devicebridge-agent
+release_agent_bin=$(swift build --package-path packages/DeviceBridgeCore \
+    --scratch-path "$release_agent_build" --configuration release \
+    --triple arm64-apple-macosx14.0 --show-bin-path)
+release_agent="$release_agent_bin/devicebridge-agent"
+if [[ ! -f "$release_agent" || ! -x "$release_agent" ]]; then
+    echo "Release devicebridge-agent was not produced: $release_agent" >&2
+    exit 1
+fi
+install -m 0755 "$release_agent" "$release_app/Contents/MacOS/devicebridge-agent"
+codesign --force --sign - "$release_app/Contents/MacOS/devicebridge-agent"
+codesign --force --sign - --preserve-metadata=entitlements,requirements,flags,runtime "$release_app"
 python3 scripts/verify-release.py "$release_app" "$release_version" "$release_build" > "$release_output/build-info.json"
 codesign --verify --deep --strict --verbose=2 "$release_app"
 [[ "$(lipo -archs "$release_app/Contents/MacOS/DeviceBridge")" == arm64 ]]
