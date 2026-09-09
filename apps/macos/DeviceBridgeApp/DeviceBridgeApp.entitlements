@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  DeviceBridge is distributed directly and intentionally runs outside the App Sandbox so it can
+  invoke the developer's adb, xcrun, and xcodebuild tools. The Release target enables Hardened
+  Runtime in build settings. No runtime exception, Apple Events, JIT, network-server, or
+  library-validation entitlement is required by the current implementation.
+-->
+<dict/>
+</plist>

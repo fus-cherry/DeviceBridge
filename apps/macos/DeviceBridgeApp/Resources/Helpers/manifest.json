@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "android": {
+    "artifact": "android-helper.apk",
+    "applicationID": "dev.debugutility.helper",
+    "versionCode": 3,
+    "versionName": "0.3.0",
+    "minimumSDK": 30,
+    "sha256": "generated-at-build-time"
+  },
+  "ios": {
+    "directory": "ios-runner",
+    "project": "helpers/ios/DeviceBridgeRunner.xcodeproj",
+    "scheme": "DeviceBridgeRunner",
+    "protocolVersion": 1,
+    "minimumOS": "17.0"
+  }
+}

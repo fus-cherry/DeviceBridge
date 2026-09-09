@@ -1,0 +1,22 @@
+name: debug_utility_workspace
+description: Local workspace for the Flutter device debugging utility.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.7.0
+
+workspace:
+  - apps/desktop_controller
+  - apps/device_companion
+  - packages/device_bridge_core
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_lints: 5.0.0
+
+flutter:
+  uses-material-design: true

@@ -1,0 +1,139 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 77;
+	objects = {
+
+		APP_ENTRY = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceBridgeApp.swift; sourceTree = "<group>"; };
+		APP_ICON = {isa = PBXFileReference; lastKnownFileType = image.icns; path = DeviceBridge.icns; sourceTree = "<group>"; };
+		APP_ICON_BUILD = {isa = PBXBuildFile; fileRef = APP_ICON; };
+		WORKSPACE_VIEW = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceView.swift; sourceTree = "<group>"; };
+		CLIPBOARD_VIEW = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardView.swift; sourceTree = "<group>"; };
+		SCREENSHOT_VIEW = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotView.swift; sourceTree = "<group>"; };
+		FILE_TRANSFER_VIEW = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTransferView.swift; sourceTree = "<group>"; };
+		PHONE_IMAGES_VIEW = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneImagesView.swift; sourceTree = "<group>"; };
+		PHONE_IMAGES_MODEL = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneImagesViewModel.swift; sourceTree = "<group>"; };
+		MEMORY_VIEW = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryView.swift; sourceTree = "<group>"; };
+		WORKSPACE_MODEL = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceViewModel.swift; sourceTree = "<group>"; };
+		INFO_PLIST = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		ENTITLEMENTS = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DeviceBridgeApp.entitlements; sourceTree = "<group>"; };
+		HELPER_MANIFEST = {isa = PBXFileReference; lastKnownFileType = text.json; path = manifest.json; sourceTree = "<group>"; };
+		PACKAGE_HELPERS_SCRIPT = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "package-helpers.sh"; sourceTree = "<group>"; };
+		PRODUCT_APP = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DeviceBridge.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		UI_TEST_FILE = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceWorkspaceUITests.swift; sourceTree = "<group>"; };
+		ACCESSIBILITY_UI_TEST_FILE = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityUITests.swift; sourceTree = "<group>"; };
+		UI_TEST_PRODUCT = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DeviceBridgeAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		CORE_PACKAGE = {isa = XCLocalSwiftPackageReference; relativePath = ../../packages/DeviceBridgeCore; };
+		CORE_PRODUCT = {isa = XCSwiftPackageProductDependency; package = CORE_PACKAGE; productName = DeviceBridgeCore; };
+		CORE_BUILD = {isa = PBXBuildFile; productRef = CORE_PRODUCT; };
+		PROTOCOL_PACKAGE = {isa = XCLocalSwiftPackageReference; relativePath = ../../packages/DeviceBridgeProtocol; };
+		PROTOCOL_PRODUCT = {isa = XCSwiftPackageProductDependency; package = PROTOCOL_PACKAGE; productName = DeviceBridgeProtocol; };
+		PROTOCOL_BUILD = {isa = PBXBuildFile; productRef = PROTOCOL_PRODUCT; };
+		APP_ENTRY_BUILD = {isa = PBXBuildFile; fileRef = APP_ENTRY; };
+		WORKSPACE_VIEW_BUILD = {isa = PBXBuildFile; fileRef = WORKSPACE_VIEW; };
+		CLIPBOARD_VIEW_BUILD = {isa = PBXBuildFile; fileRef = CLIPBOARD_VIEW; };
+		SCREENSHOT_VIEW_BUILD = {isa = PBXBuildFile; fileRef = SCREENSHOT_VIEW; };
+		FILE_TRANSFER_VIEW_BUILD = {isa = PBXBuildFile; fileRef = FILE_TRANSFER_VIEW; };
+		PHONE_IMAGES_VIEW_BUILD = {isa = PBXBuildFile; fileRef = PHONE_IMAGES_VIEW; };
+		PHONE_IMAGES_MODEL_BUILD = {isa = PBXBuildFile; fileRef = PHONE_IMAGES_MODEL; };
+		MEMORY_VIEW_BUILD = {isa = PBXBuildFile; fileRef = MEMORY_VIEW; };
+		WORKSPACE_MODEL_BUILD = {isa = PBXBuildFile; fileRef = WORKSPACE_MODEL; };
+		UI_TEST_BUILD = {isa = PBXBuildFile; fileRef = UI_TEST_FILE; };
+		ACCESSIBILITY_UI_TEST_BUILD = {isa = PBXBuildFile; fileRef = ACCESSIBILITY_UI_TEST_FILE; };
+
+		ROOT_GROUP = {
+			isa = PBXGroup;
+			children = (APP_GROUP, UI_TEST_GROUP, PRODUCTS_GROUP,);
+			sourceTree = "<group>";
+		};
+		APP_GROUP = {
+			isa = PBXGroup;
+			path = DeviceBridgeApp;
+			sourceTree = "<group>";
+			children = (APP_FOLDER, VIEWS_FOLDER, VIEW_MODELS_FOLDER, RESOURCES_FOLDER, INFO_PLIST, ENTITLEMENTS,);
+		};
+		APP_FOLDER = {isa = PBXGroup; path = App; sourceTree = "<group>"; children = (APP_ENTRY,); };
+		VIEWS_FOLDER = {isa = PBXGroup; path = Views; sourceTree = "<group>"; children = (WORKSPACE_VIEW, CLIPBOARD_VIEW, SCREENSHOT_VIEW, FILE_TRANSFER_VIEW, PHONE_IMAGES_VIEW, MEMORY_VIEW,); };
+		VIEW_MODELS_FOLDER = {isa = PBXGroup; path = ViewModels; sourceTree = "<group>"; children = (WORKSPACE_MODEL, PHONE_IMAGES_MODEL,); };
+		RESOURCES_FOLDER = {isa = PBXGroup; path = Resources; sourceTree = "<group>"; children = (APP_ICON, HELPERS_FOLDER,); };
+		HELPERS_FOLDER = {isa = PBXGroup; path = Helpers; sourceTree = "<group>"; children = (HELPER_MANIFEST, PACKAGE_HELPERS_SCRIPT,); };
+		UI_TEST_GROUP = {isa = PBXGroup; path = DeviceBridgeAppUITests; sourceTree = "<group>"; children = (UI_TEST_FILE, ACCESSIBILITY_UI_TEST_FILE,); };
+		PRODUCTS_GROUP = {isa = PBXGroup; name = Products; sourceTree = "<group>"; children = (PRODUCT_APP, UI_TEST_PRODUCT,); };
+
+		SOURCES_PHASE = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (APP_ENTRY_BUILD, WORKSPACE_VIEW_BUILD, CLIPBOARD_VIEW_BUILD, SCREENSHOT_VIEW_BUILD, FILE_TRANSFER_VIEW_BUILD, PHONE_IMAGES_VIEW_BUILD, PHONE_IMAGES_MODEL_BUILD, MEMORY_VIEW_BUILD, WORKSPACE_MODEL_BUILD,); runOnlyForDeploymentPostprocessing = 0; };
+		FRAMEWORKS_PHASE = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (CORE_BUILD, PROTOCOL_BUILD,); runOnlyForDeploymentPostprocessing = 0; };
+		RESOURCES_PHASE = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (APP_ICON_BUILD,); runOnlyForDeploymentPostprocessing = 0; };
+		PACKAGE_HELPERS_PHASE = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = ();
+			inputFileListPaths = ();
+			inputPaths = ();
+			name = "Package Managed Helpers";
+			outputFileListPaths = ();
+			outputPaths = ("$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Helpers",);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"${SRCROOT}/DeviceBridgeApp/Resources/Helpers/package-helpers.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		UI_TEST_SOURCES = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (UI_TEST_BUILD, ACCESSIBILITY_UI_TEST_BUILD,); runOnlyForDeploymentPostprocessing = 0; };
+		UI_TEST_FRAMEWORKS = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		UI_TEST_RESOURCES = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		UI_TEST_PROXY = {isa = PBXContainerItemProxy; containerPortal = PROJECT; proxyType = 1; remoteGlobalIDString = APP_TARGET; remoteInfo = DeviceBridge; };
+		UI_TEST_DEPENDENCY = {isa = PBXTargetDependency; target = APP_TARGET; targetProxy = UI_TEST_PROXY; };
+
+		APP_TARGET = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = TARGET_CONFIG_LIST;
+			buildPhases = (SOURCES_PHASE, FRAMEWORKS_PHASE, RESOURCES_PHASE, PACKAGE_HELPERS_PHASE,);
+			buildRules = ();
+			dependencies = ();
+			name = DeviceBridge;
+			packageProductDependencies = (CORE_PRODUCT, PROTOCOL_PRODUCT,);
+			productName = DeviceBridge;
+			productReference = PRODUCT_APP;
+			productType = "com.apple.product-type.application";
+		};
+		UI_TEST_TARGET = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = UI_TEST_CONFIG_LIST;
+			buildPhases = (UI_TEST_SOURCES, UI_TEST_FRAMEWORKS, UI_TEST_RESOURCES,);
+			buildRules = ();
+			dependencies = (UI_TEST_DEPENDENCY,);
+			name = DeviceBridgeAppUITests;
+			productName = DeviceBridgeAppUITests;
+			productReference = UI_TEST_PRODUCT;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+
+		PROJECT = {
+			isa = PBXProject;
+			attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2660; LastUpgradeCheck = 2660; TargetAttributes = {APP_TARGET = {CreatedOnToolsVersion = 26.6;}; UI_TEST_TARGET = {CreatedOnToolsVersion = 26.6; TestTargetID = APP_TARGET;};};};
+			buildConfigurationList = PROJECT_CONFIG_LIST;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (en, Base,);
+			mainGroup = ROOT_GROUP;
+			packageReferences = (CORE_PACKAGE, PROTOCOL_PACKAGE,);
+			productRefGroup = PRODUCTS_GROUP;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (APP_TARGET, UI_TEST_TARGET,);
+		};
+
+		PROJECT_DEBUG = {isa = XCBuildConfiguration; buildSettings = {ARCHS = arm64; CLANG_ENABLE_MODULES = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; ONLY_ACTIVE_ARCH = YES; SDKROOT = macosx; SWIFT_VERSION = 6.0;}; name = Debug; };
+		PROJECT_RELEASE = {isa = XCBuildConfiguration; buildSettings = {ARCHS = arm64; CLANG_ENABLE_MODULES = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; ONLY_ACTIVE_ARCH = YES; SDKROOT = macosx; SWIFT_VERSION = 6.0;}; name = Release; };
+		TARGET_DEBUG = {isa = XCBuildConfiguration; buildSettings = {ARCHS = arm64; CODE_SIGN_ENTITLEMENTS = DeviceBridgeApp/DeviceBridgeApp.entitlements; CODE_SIGN_STYLE = Automatic; COMBINE_HIDPI_IMAGES = YES; CURRENT_PROJECT_VERSION = 2; DEVELOPMENT_TEAM = ""; ENABLE_APP_SANDBOX = NO; ENABLE_HARDENED_RUNTIME = NO; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = DeviceBridgeApp/Info.plist; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks"; MARKETING_VERSION = 0.1.1; ONLY_ACTIVE_ARCH = YES; PRODUCT_BUNDLE_IDENTIFIER = dev.debugutility.DeviceBridge; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 6.0;}; name = Debug; };
+		TARGET_RELEASE = {isa = XCBuildConfiguration; buildSettings = {ARCHS = arm64; CODE_SIGN_ENTITLEMENTS = DeviceBridgeApp/DeviceBridgeApp.entitlements; CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO; CODE_SIGN_STYLE = Automatic; COMBINE_HIDPI_IMAGES = YES; CURRENT_PROJECT_VERSION = 2; DEVELOPMENT_TEAM = ""; ENABLE_APP_SANDBOX = NO; ENABLE_HARDENED_RUNTIME = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = DeviceBridgeApp/Info.plist; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks"; MARKETING_VERSION = 0.1.1; ONLY_ACTIVE_ARCH = YES; PRODUCT_BUNDLE_IDENTIFIER = dev.debugutility.DeviceBridge; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 6.0;}; name = Release; };
+		UI_TEST_DEBUG = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 2; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; MARKETING_VERSION = 0.1.1; PRODUCT_BUNDLE_IDENTIFIER = dev.debugutility.DeviceBridgeAppUITests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = macosx; SWIFT_VERSION = 6.0; TEST_TARGET_NAME = DeviceBridge;}; name = Debug; };
+		UI_TEST_RELEASE = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 2; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; MARKETING_VERSION = 0.1.1; PRODUCT_BUNDLE_IDENTIFIER = dev.debugutility.DeviceBridgeAppUITests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = macosx; SWIFT_VERSION = 6.0; TEST_TARGET_NAME = DeviceBridge;}; name = Release; };
+		PROJECT_CONFIG_LIST = {isa = XCConfigurationList; buildConfigurations = (PROJECT_DEBUG, PROJECT_RELEASE,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		TARGET_CONFIG_LIST = {isa = XCConfigurationList; buildConfigurations = (TARGET_DEBUG, TARGET_RELEASE,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		UI_TEST_CONFIG_LIST = {isa = XCConfigurationList; buildConfigurations = (UI_TEST_DEBUG, UI_TEST_RELEASE,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+	};
+	rootObject = PROJECT;
+}

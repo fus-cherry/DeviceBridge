@@ -1,0 +1,50 @@
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.tmp
+*.log
+.env*
+
+# Local distribution output and unrelated task artifacts
+/dist/
+/artifacts/
+
+# Local signing credentials
+*.p12
+*.p8
+*.mobileprovision
+*.provisionprofile
+*.keystore
+*.jks
+
+# Contributor-only Python probes
+__pycache__/
+*.pyc
+
+# Swift / Xcode
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcresult
+*.ipa
+*.dSYM/
+
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+*.apk
+*.aab
+*.iml
+
+# Legacy Flutter scaffold (kept temporarily)
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+pubspec.lock
+**/.metadata
+**/ios/Pods/
+**/macos/Pods/

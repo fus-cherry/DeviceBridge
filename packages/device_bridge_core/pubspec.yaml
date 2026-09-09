@@ -1,0 +1,15 @@
+name: device_bridge_core
+description: Shared immutable models and wire contracts for the device utility.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.7.2
+
+resolution: workspace
+
+dependencies: {}
+
+dev_dependencies:
+  lints: 5.1.1
+  test: 1.25.15
