@@ -8,11 +8,15 @@ struct HostCommandRunnerTests {
 
     @Test("output quota stops a still-running writer before its timeout")
     func streamingOutputLimit() async {
+        // Use a native endless writer: interpreter startup is unrelated to the quota.
+        // The elapsed assertion distinguishes early termination from a timeout later
+        // remapped to outputLimitExceeded after the pipe readers finish draining.
+        let started = ContinuousClock.now
         await #expect(throws: HostCommandError.outputLimitExceeded) {
-            try await runner.run(HostCommandRequest(executableURL: URL(fileURLWithPath: "/usr/bin/python3"),
-                arguments: ["-c", "import sys,time; sys.stdout.write('x'*100000); sys.stdout.flush(); time.sleep(2)"],
-                timeout: .milliseconds(500), maximumOutputBytes: 1_024))
+            try await runner.run(HostCommandRequest(executableURL: URL(fileURLWithPath: "/usr/bin/yes"),
+                timeout: .seconds(5), maximumOutputBytes: 1_024))
         }
+        #expect(started.duration(to: .now) < .seconds(2))
     }
 
     @Test("rapid process exits cannot be lost before an async waiter attaches")

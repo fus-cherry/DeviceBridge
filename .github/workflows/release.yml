@@ -55,13 +55,17 @@ jobs:
         with:
           gradle-version: '8.11.1'
           cache-disabled: true
-      - name: Test Swift packages and packaging contracts
+      - name: Test shared protocol
+        run: swift test --package-path packages/DeviceBridgeProtocol
+      - name: Test secure channel
+        run: swift test --package-path packages/DeviceBridgeSecureChannel --no-parallel
+      - name: Test device core
+        run: swift test --package-path packages/DeviceBridgeCore --no-parallel
+      - name: Check packaging contracts
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Check workspace state flows
         run: |
           set -euo pipefail
-          swift test --package-path packages/DeviceBridgeProtocol
-          swift test --package-path packages/DeviceBridgeSecureChannel --no-parallel
-          swift test --package-path packages/DeviceBridgeCore --no-parallel
-          python3 -m unittest discover -s scripts -p 'test_*.py'
           bash scripts/check-device-selection.sh
           bash scripts/check-ios-runner-workspace.sh
       - name: Test and sign Android helper
