@@ -1,0 +1,136 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Select release identity
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF_TYPE" == tag ]]; then
+            [[ "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Use a vMAJOR.MINOR.PATCH tag'; exit 1; }
+            version=${REF_NAME#v}
+          else
+            version=$(cat VERSION)
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_OUTPUT"
+          [[ "$(uname -m)" == arm64 ]]
+          xcodebuild -version
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+      - name: Install Android build tools
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+        with:
+          gradle-version: '8.11.1'
+          cache-disabled: true
+      - name: Test Swift packages and packaging contracts
+        run: |
+          set -euo pipefail
+          swift test --package-path packages/DeviceBridgeProtocol
+          swift test --package-path packages/DeviceBridgeSecureChannel --no-parallel
+          swift test --package-path packages/DeviceBridgeCore --no-parallel
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+          bash scripts/check-device-selection.sh
+          bash scripts/check-ios-runner-workspace.sh
+      - name: Test and sign Android helper
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          DEVICE_BRIDGE_HELPER_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          DEVICE_BRIDGE_HELPER_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          DEVICE_BRIDGE_HELPER_KEY_ALIAS: devicebridge-ci
+        run: |
+          set -euo pipefail
+          : "${ANDROID_KEYSTORE_BASE64:?Configure the dedicated Android CI signing key}"
+          : "${DEVICE_BRIDGE_HELPER_STORE_PASSWORD:?Configure the Android CI signing password}"
+          export DEVICE_BRIDGE_HELPER_KEYSTORE="$RUNNER_TEMP/devicebridge-ci.jks"
+          trap 'rm -f "$DEVICE_BRIDGE_HELPER_KEYSTORE"' EXIT
+          umask 077
+          python3 - <<'PY'
+          import base64, os, pathlib
+          pathlib.Path(os.environ['DEVICE_BRIDGE_HELPER_KEYSTORE']).write_bytes(
+              base64.b64decode(os.environ['ANDROID_KEYSTORE_BASE64'], validate=True))
+          PY
+          gradle -p helpers/android --no-daemon testDebugUnitTest assembleRelease
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs \
+            helpers/android/app/build/outputs/apk/release/app-release.apk
+      - name: Build and verify DMG
+        id: package
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_BUILD: ${{ steps.version.outputs.build }}
+          DEVICE_BRIDGE_ANDROID_HELPER_APK: ${{ github.workspace }}/helpers/android/app/build/outputs/apk/release/app-release.apk
+          DEVICE_BRIDGE_ANDROID_HELPER_METADATA: ${{ github.workspace }}/helpers/android/app/build/outputs/apk/release/output-metadata.json
+        run: bash scripts/build-release.sh "$RELEASE_VERSION" "$RELEASE_BUILD"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: DeviceBridge-${{ steps.version.outputs.version }}-build${{ steps.version.outputs.build }}
+          path: ${{ steps.package.outputs.directory }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: DeviceBridge-${{ needs.build.outputs.version }}-build${{ needs.build.outputs.build }}
+          path: release
+      - name: Publish complete internal release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_BUILD: ${{ needs.build.outputs.build }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" == "v$RELEASE_VERSION" ]]
+          [[ "$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" == "$GITHUB_SHA" ]]
+          cd release
+          sha256sum --check SHA256SUMS.txt
+          # Draft first: users only see a published release after every asset uploads.
+          # Existing releases are deliberately never overwritten by a rerun.
+          gh release create "$RELEASE_TAG" --verify-tag --target "$GITHUB_SHA" \
+            --draft --prerelease --title "DeviceBridge $RELEASE_VERSION · Build $RELEASE_BUILD" \
+            --notes-file release-notes.md
+          gh release upload "$RELEASE_TAG" \
+            "DeviceBridge-$RELEASE_VERSION-build$RELEASE_BUILD-macOS-arm64.dmg" \
+            SHA256SUMS.txt build-info.json release-notes.md
+          gh release edit "$RELEASE_TAG" --draft=false

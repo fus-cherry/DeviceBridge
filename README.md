@@ -1,199 +1,61 @@
 # DeviceBridge
 
-DeviceBridge is a small native macOS tool for a trusted Flutter development team. One Mac app
-discovers Android and iOS devices, prefers USB, supports prepared wireless transports, and presents
-clipboard, screenshot, scoped file-transfer, Flutter VM, memory, and Android Wi-Fi-maintenance tools.
-The Flutter app being debugged does not need a package or code change.
+面向 Flutter 开发者的原生 macOS 设备调试工具。在一个窗口中连接 Android 与 iPhone，处理剪切板、截图、图片、文件和 Flutter 内存数据；被调试的 Flutter 项目无需添加依赖或修改代码。
 
-## 0.1.1 internal trial
+[下载 Release](https://github.com/fus-cherry/DeviceBridge/releases) · [开发与测试](docs/development.md) · [自动构建与发布](docs/releasing.md) · [验收指南](specs/001-device-debug-bridge/quickstart.md)
 
-Clipboard now handles complete current text up to 1 MiB UTF-8 (not history), with an expanded editor,
-Copy all and exclusive TXT save. Background device discovery is silent. Files → Images shows a
-24-item thumbnail album and original download; only the current page is read after explicit Load.
-Android shared-folder scope and iOS content restrictions remain unchanged. See
-[trial evidence](specs/001-device-debug-bridge/validation/trial-feedback-20260907.md) for checks and gaps.
+## 可以做什么
 
-## Interface language / 界面语言
+| 功能 | 当前范围 |
+| --- | --- |
+| 设备连接 | 自动发现设备、优先 USB；Android 支持已配对的无线调试与连接维护。iOS 主要验证路径为 USB。 |
+| 剪切板 | 读取、写入当前文本，最多 1 MiB UTF-8；支持完整编辑、复制全部及保存 TXT，不读取历史记录。 |
+| 截图 | 捕获设备屏幕、预览、复制和保存 PNG；iOS 需先准备并签名设备端 runner。 |
+| 图片 | 按需加载每页最多 24 张缩略图，预览并下载原图；Android 限 DCIM、Pictures、Download，iPhone 限 USB 相机导入可访问内容。 |
+| 文件传输 | Android 下载目录及可调试应用数据；iOS 由 CoreDevice 允许的临时目录、应用/应用组容器和只读崩溃日志。受保护路径不可任意访问。 |
+| Flutter 内存 | 发现目标应用的 VM Service，监测 Dart heap/external 数据；Android 另有系统内存信息。Dart 指标不等同于 iOS 应用总内存。 |
+| 界面语言 | 跟随系统、简体中文、English；右上角即时切换并保存选择，不改变设备内容或当前会话。 |
 
-Use the language menu at the top right of the Mac window to choose **Follow System**, **简体中文**,
-or **English**. The default follows the system (Chinese → Simplified Chinese; other languages →
-English), and explicit choices persist across launches. The workspace changes immediately without
-recreating its device session. Device names, clipboard contents, paths and transferred bytes remain
-unchanged. Native macOS dialog/menu chrome and the mobile helpers follow their own OS language.
+## 下载与安装
 
-在 Mac 窗口右上角选择“跟随系统”“简体中文”或“English”，即可即时切换工作区语言。
-选择会自动保存，不需要重启；设备名称、剪切板内容和文件路径不会被翻译。
+1. 登录有权访问本私人仓库的 GitHub 账号，打开 [Releases](https://github.com/fus-cherry/DeviceBridge/releases)，下载对应版本的 `macOS-arm64.dmg` 文件。
+2. 打开 DMG，将 `DeviceBridge.app` 拖入“应用程序”，然后从“应用程序”启动。
+3. 当前自动构建采用 **ad-hoc 签名，未经过 Apple 公证**，面向可信团队内部使用。如果 macOS 阻止打开，在确认下载来源后，通过“系统设置 → 隐私与安全性”对这一个应用选择“仍要打开”。组织的安全策略可能不允许此类应用。
+4. 按下方要求准备设备工具，连接并选择设备。应用会显示检查、准备、失败原因与重试入口。
 
-## What a teammate needs
+每次发布的具体文件、校验和及构建结果以 Release 页面为准。手动触发构建的下载位置和维护者操作见[发布文档](docs/releasing.md)。
 
-A teammate receiving a signed `DeviceBridge.app` does **not** build or install the Android helper
-manually; the APK is embedded and installed or updated by DeviceBridge. Their Mac still needs:
+## 使用前准备
 
-- Apple Silicon macOS 14 or newer;
-- Xcode 15.4 or newer, selected for `xcrun devicectl`, iOS Developer Mode, and runner signing;
-- Android SDK Platform-Tools with ADB 37 or newer for Android;
-- the normal device trust/authorization prompts, and one-time wireless pairing when Wi-Fi is used.
+| 使用场景 | 要求 |
+| --- | --- |
+| Mac 应用 | Apple Silicon，macOS 14 或更新；当前不提供 Intel 构建。 |
+| Android | Android 11+，Android SDK Platform-Tools / ADB 37+；开启 USB 调试并确认设备授权。无线连接需先完成无线调试配对。 |
+| iPhone | iOS 17+；安装并选用支持 **Swift 6.2+** 的 Xcode，且支持所连接的 iOS 版本；完成设备信任与开发者模式设置。Xcode 自身可能要求比 macOS 14 更新的系统。 |
+| iOS 剪切板与截图 | 在应用“设置”填写现有 Apple 开发团队 ID；本机须已有可用开发签名身份和设备描述文件，修改后重新选择 iPhone。应用不会自动创建证书。 |
 
-Android clipboard and keep-alive need the visible managed helper. iOS helper features additionally
-need a development signing team on each developer Mac. The current iOS persistent command channel
-is still under implementation; discovery and CoreDevice file operations do not depend on it.
+Android helper APK 已内置，应用按需安装或更新，无需使用者自行编译。剪切板及无线保活需要可见的受管 helper，并可能要求前台操作或通知权限。iOS runner 源码同样内置，但必须在使用者自己的 Mac 上完成开发签名与构建。
 
-## Contributor build
+设备信任、调试授权、配对、剪切板隐私提示和文件/网络权限按实际操作处理。当前实现通过设备工具截图，不要求 Mac 屏幕录制，也不要求全局辅助功能或完全磁盘访问。连接设备或后台发现不会自动读取剪切板、截图或图片内容；图片需要点击“加载图片”。
 
-Contributors need Gradle 8.11.1 (or the matching Android Studio Gradle runner); the repository does
-not currently vendor a Gradle wrapper binary.
+## iPhone 首次准备为何较慢
 
-Run the automated suites from the repository root:
+首次使用需要本机编译、校验签名、安装并启动 runner。界面会显示准备阶段、已用时间与取消/恢复操作；构建完成的工作目录可跨应用重启复用，后续仍会运行增量构建及签名校验。
 
-```sh
-swift test --package-path packages/DeviceBridgeCore
+2026-09-09 的三个独立进程实测：首次编译 **33.650 秒**，复用后 **2.359 / 1.689 秒**。这仅测量 `build-for-testing`，**不含设备安装、通道启动或整体就绪时间**；更换安装路径、团队、设备或构建输入仍可能触发冷构建。详见[启动反馈与缓存验证](specs/001-device-debug-bridge/validation/startup-feedback-and-reuse-20260909.md)。
 
-gradle -p helpers/android testDebugUnitTest assembleDebug
+## 已知限制
 
-xcodebuild test -project apps/macos/DeviceBridge.xcodeproj \
-  -scheme DeviceBridge -destination 'platform=macOS,arch=arm64' \
-  -derivedDataPath .build/xcode-ui-derived \
-  -only-testing:DeviceBridgeAppUITests \
-  -skip-testing:DeviceBridgeAppUITests/DeviceWorkspaceUITests/testLiveInventoryCanSwitchBetweenTwoCommandReadyDevices
-```
+- 当前是内部试用工具。已有指定真机的 USB 剪切板、截图、图片与文件传输记录，但不能据此保证所有设备、系统和权限组合都可用；全新 Mac 首次运行仍需验证。
+- iPhone 无线图片访问不可用；其他 iOS 无线路径、断连/锁屏/拒绝权限等异常条件，以及 Flutter VM 长期稳定性仍需分别验收。USB 成功不代表 Wi-Fi 已通过。
+- Android 无线连接会受厂商电池策略和网络变化影响；长时间保活与大文件传输仍需在目标设备上验证。
+- iOS runner 会话最长运行一小时，结束后需重新选择设备。持久编译缓存目前没有自动容量上限；中断或失败的工作目录不会自动回收。
+- 自动构建通过代表产物与自动检查通过，不代表真机验收完成，也不代表 Developer ID 签名或 Apple 公证通过。
 
-This UI command uses fixture devices only. Run the separately named live-device test only when
-real-device interaction and managed helper preparation are intended.
+## 文档导航
 
-### UI test authorization is not a teammate prerequisite
-
-Desktop XCTest synthesizes real input and can steal focus/mouse control on a shared desktop. Do not
-run it while the user works unless an isolated picture-in-picture session is actually available or
-the user explicitly agrees to foreground testing. A preview window is not input isolation. Use
-background core/physical-device checks instead; see [physical validation](specs/001-device-debug-bridge/validation/physical-background.md).
-If `testmanagerd` requests enabling an input method, do not treat that as DeviceBridge clipboard
-consent or automatically approve it.
-
-XCTest may ask to enable developer UI automation on the Mac. Keep normal local signing enabled for
-UI tests; do not add `CODE_SIGNING_ALLOWED=NO` to the test command. If startup stalls before the first
-test, inspect the actual system prompt and the requesting app, then approve only the permission you
-intend to grant. A timeout alone does not prove that a particular permission is missing. Do not reset
-privacy settings or enable every permission as a workaround.
-
-Codex Computer Use's Accessibility permission is for the agent operating the desktop, not a required
-permission for teammates running DeviceBridge. The current app uses device tools for phone screenshots,
-not Mac screen recording; its implementation does not require blanket Mac Accessibility or Full Disk
-Access. Device trust, debugging/pairing, helper notification, and relevant file/network prompts are
-separate and still depend on the operation and OS. Fresh-install permission qualification remains open.
-
-Then build the Mac app:
-
-```sh
-xcodebuild build -project apps/macos/DeviceBridge.xcodeproj \
-  -scheme DeviceBridge -configuration Debug \
-  -derivedDataPath .build/xcode-derived
-```
-
-The `Package Managed Helpers` phase requires an Android APK before the Mac build. It embeds that APK,
-the iOS runner project, and a generated SHA-256/version manifest under
-`DeviceBridge.app/Contents/Resources/Helpers`.
-
-## Android helper signing
-
-`assembleDebug` is suitable for one developer and is automatically debug-signed. For a team build,
-use one protected, stable internal signing key so future helper versions can update the installed APK.
-Do not commit the keystore or passwords.
-
-Set all four variables in the release shell, build the signed helper, then point the Mac archive at
-that artifact:
-
-```sh
-export DEVICE_BRIDGE_HELPER_KEYSTORE='/secure/path/devicebridge-helper.jks'
-export DEVICE_BRIDGE_HELPER_STORE_PASSWORD='stored-outside-the-repository'
-export DEVICE_BRIDGE_HELPER_KEY_ALIAS='devicebridge-helper'
-export DEVICE_BRIDGE_HELPER_KEY_PASSWORD='stored-outside-the-repository'
-
-gradle -p helpers/android testDebugUnitTest assembleRelease
-
-export DEVICE_BRIDGE_ANDROID_HELPER_APK="$PWD/helpers/android/app/build/outputs/apk/release/app-release.apk"
-export DEVICE_BRIDGE_ANDROID_HELPER_METADATA="$PWD/helpers/android/app/build/outputs/apk/release/output-metadata.json"
-```
-
-Use a JKS keystore accepted by Android's signing tools. If a device already has a helper signed by a
-different key, uninstall `dev.debugutility.helper` once before installing the team build.
-
-## Developer ID archive
-
-Install a `Developer ID Application` certificate and set the development team for the target. The
-Release configuration enables Hardened Runtime, disables App Sandbox for local developer-tool access,
-does not inject `get-task-allow`, and requests no runtime exceptions.
-
-The simplest supported workflow is Xcode: Product > Archive, open Organizer, choose Distribute App,
-then choose Developer ID / Direct Distribution and Upload for notarization.
-
-The equivalent repeatable archive/export commands are:
-
-```sh
-xcodebuild archive -project apps/macos/DeviceBridge.xcodeproj \
-  -scheme DeviceBridge -configuration Release \
-  -destination 'generic/platform=macOS' \
-  -archivePath "$PWD/.build/archives/DeviceBridge.xcarchive" \
-  DEVELOPMENT_TEAM='YOUR_TEAM_ID' CODE_SIGN_STYLE=Automatic
-
-xcodebuild -exportArchive \
-  -archivePath "$PWD/.build/archives/DeviceBridge.xcarchive" \
-  -exportPath "$PWD/.build/export" \
-  -exportOptionsPlist apps/macos/ExportOptions-DeveloperID.plist
-```
-
-Verify the exported product before submission:
-
-```sh
-codesign --verify --deep --strict --verbose=2 .build/export/DeviceBridge.app
-codesign -d --entitlements :- .build/export/DeviceBridge.app
-```
-
-## Notarization and distribution
-
-Store notarization credentials interactively in Keychain; never place the app-specific password in
-the repository or shell history:
-
-```sh
-xcrun notarytool store-credentials 'DeviceBridge-notary' \
-  --apple-id 'APPLE_ID' --team-id 'YOUR_TEAM_ID'
-
-ditto -c -k --keepParent \
-  .build/export/DeviceBridge.app .build/export/DeviceBridge-submit.zip
-
-xcrun notarytool submit .build/export/DeviceBridge-submit.zip \
-  --keychain-profile 'DeviceBridge-notary' --wait
-
-xcrun stapler staple .build/export/DeviceBridge.app
-xcrun stapler validate .build/export/DeviceBridge.app
-spctl --assess --type execute --verbose=4 .build/export/DeviceBridge.app
-
-ditto -c -k --keepParent \
-  .build/export/DeviceBridge.app .build/export/DeviceBridge-notarized.zip
-```
-
-Review the notarization log even after success. A ZIP can be submitted but cannot itself be stapled,
-so staple the app and create the final ZIP afterward.
-
-Apple references: [notarizing macOS software](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution),
-[custom notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow),
-and [Hardened Runtime](https://developer.apple.com/documentation/xcode/configuring-the-hardened-runtime).
-Android reference: [app signing](https://developer.android.com/studio/publish/app-signing).
-
-## Validation and known limits
-
-The executable validation guide is in
-[`specs/001-device-debug-bridge/quickstart.md`](specs/001-device-debug-bridge/quickstart.md), with exact
-results under `specs/001-device-debug-bridge/validation/`. Real-device checks remain required for iOS
-runner transport, Android OEM battery policies, long wireless sessions, and large transfers.
-
-The app refreshes inventory every five seconds. Selected Android sessions now run idle-only,
-single-flight health checks, invalidate failed sessions, and attempt bounded ADB endpoint recovery.
-Recovery verifies the existing authenticated helper identity before rebinding tools; unavailable
-identity proof requires manual action. Wi-Fi helper lease renewal remains a separate mechanism.
-Core command-fixture tests and all eight fixture UI tests pass, including recovery and device
-switching. Earlier automation initialization failures did not recur in the latest runs.
-iOS still has selection-time checks, not this recovery loop.
-See [connection maintenance evidence](specs/001-device-debug-bridge/validation/android-connection-maintenance.md).
-See the [task list](specs/001-device-debug-bridge/tasks.md) and
-[iOS channel contract](specs/001-device-debug-bridge/contracts/ios-runner-channel.md) for the remaining
-implementation and qualification work. A passing automated suite is not final device acceptance.
+- [开发与测试](docs/development.md)：工具链、源码构建、测试边界及手动 Developer ID / 公证流程。
+- [自动构建与发布](docs/releasing.md)：GitHub Actions、签名配置、版本标签与产物下载。
+- [Quickstart / 验收指南](specs/001-device-debug-bridge/quickstart.md)：可执行检查和物理设备验证条件。
+- [需求规格](specs/001-device-debug-bridge/spec.md) · [实现计划](specs/001-device-debug-bridge/plan.md) · [任务与未完成项](specs/001-device-debug-bridge/tasks.md)。
+- [验证记录](specs/001-device-debug-bridge/validation/)：按日期保留历史结果和限制；当前启动行为见 [Build 9](specs/001-device-debug-bridge/validation/startup-feedback-and-reuse-20260909.md)，非 VM 真机证据见 [iOS 验收记录](specs/001-device-debug-bridge/validation/ios-nonvm-acceptance.md)。
