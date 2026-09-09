@@ -59,6 +59,16 @@ class ReleaseBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "private"):
             self.verify()
 
+    def test_owner_only_apk_is_rejected(self):
+        self.apk.chmod(0o600)
+        with self.assertRaisesRegex(ValueError, "readable"):
+            self.verify()
+
+    def test_owner_only_source_directory_is_rejected(self):
+        (self.helpers / "ios-runner/packages").chmod(0o700)
+        with self.assertRaisesRegex(ValueError, "traversable"):
+            self.verify()
+
     def test_escaping_symlink_is_rejected(self):
         (self.helpers / "ios-runner/escape").symlink_to(self.app.parent)
         with self.assertRaisesRegex(ValueError, "symlink"):

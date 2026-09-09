@@ -34,6 +34,11 @@ def verify(app: Path, version: str, build: str) -> dict:
     for path in helpers.rglob("*"):
         if path.is_symlink() and not path.resolve().is_relative_to(helpers.resolve()):
             raise ValueError(f"escaping helper symlink: {path.relative_to(helpers)}")
+        mode = path.stat().st_mode
+        if path.is_file() and mode & 0o444 != 0o444:
+            raise ValueError(f"helper resource is not readable by all users: {path.relative_to(helpers)}")
+        if path.is_dir() and mode & 0o555 != 0o555:
+            raise ValueError(f"helper directory is not traversable by all users: {path.relative_to(helpers)}")
         if path.suffix.lower() in {".p12", ".pfx", ".p8", ".key", ".pem", ".jks", ".keystore", ".mobileprovision", ".provisionprofile"}:
             raise ValueError(f"private signing material in helper bundle: {path.relative_to(helpers)}")
     return {"version": version, "build": build, "android_sha256": actual_hash,

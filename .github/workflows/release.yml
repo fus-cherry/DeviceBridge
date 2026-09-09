@@ -80,11 +80,12 @@ jobs:
           : "${DEVICE_BRIDGE_HELPER_STORE_PASSWORD:?Configure the Android CI signing password}"
           export DEVICE_BRIDGE_HELPER_KEYSTORE="$RUNNER_TEMP/devicebridge-ci.jks"
           trap 'rm -f "$DEVICE_BRIDGE_HELPER_KEYSTORE"' EXIT
-          umask 077
           python3 - <<'PY'
-          import base64, os, pathlib
-          pathlib.Path(os.environ['DEVICE_BRIDGE_HELPER_KEYSTORE']).write_bytes(
-              base64.b64decode(os.environ['ANDROID_KEYSTORE_BASE64'], validate=True))
+          import base64, os
+          path = os.environ['DEVICE_BRIDGE_HELPER_KEYSTORE']
+          descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(descriptor, 'wb') as key_file:
+              key_file.write(base64.b64decode(os.environ['ANDROID_KEYSTORE_BASE64'], validate=True))
           PY
           gradle -p helpers/android --no-daemon testDebugUnitTest assembleRelease
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs \

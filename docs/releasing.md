@@ -30,7 +30,7 @@ git push origin v0.1.2
 1. 校验版本与 runner 架构。
 2. 运行三个 Swift package 的测试、Python 打包检查及两个无界面工作区检查。
 3. 用固定 CI 签名构建 Android helper，并验证 APK 签名。
-4. [build-release.sh](../scripts/build-release.sh) 构建 Release App，校验 App 版本、arm64 架构、代码签名、内嵌 APK 哈希及 iOS runner 源码依赖，生成并校验 DMG。
+4. [build-release.sh](../scripts/build-release.sh) 构建 Release App，校验 App 版本、arm64 架构、代码签名、内嵌 APK 哈希、iOS runner 源码依赖及资源的多用户读取权限，生成并校验 DMG。
 5. 上传 DMG、`SHA256SUMS.txt`、`build-info.json` 和发布说明。版本标签构建在独立发布任务中先创建草稿、上传全部附件，再公开为仓库成员可见的预发布版本。
 
 工作流默认只读仓库，仅发布任务拥有 `contents: write`。第三方 Actions 固定到提交 SHA。构建不会运行桌面 XCTest，也不会接触真实手机；自动检查不代表真机全功能验收完成。
