@@ -257,3 +257,12 @@ USB事件日志确认17:57:42断开、17:57:46重新打开；同一OPPO的transp
 ### 剩余范围
 
 Android连接阻塞已解除；当前原生、业务模型与实际CLI真机链路通过。先前实际窗口验证使用fixture，本轮未在正常工作区窗口逐项重演真实手机的Q4及UI/Agent互斥操作，因此不将该证据替换为完整窗口验收。T028/T048保留此剩余项；T019/T042/T049还涉及未验证的真实iPhone已认证runtime。当前仍45/50，未完成项不表示此前Android超时仍在发生。没有提交、推送、发布或真实设备安装。
+
+
+## CI socket deadline 测试修正（2026-09-10）
+
+main构建34343966917在Core测试阶段失败：507项中只有`heldSocketDeadlineIsPromptAndClean`失败，3次1秒deadline的中位超时余量45.75275ms超过测试的20ms门槛；协议及安全通道测试通过，打包阶段尚未执行。生产代码已使用零容差，原断言将OS/executor调度及socket清理延迟混入定时器合并策略的判断，不能从该失败推出设置回退或真实操作超时失效。
+
+修正为内部socket可注入的sleep边界（默认仍直接调用Task.sleep），在真实held socket检查中明确断言传入tolerance为zero，同时验证timedOut和terminal清理完成。墙钟检查保留2秒调度余量，不把CI调度表现作为20ms保证。生产deadline计算、零容差请求、取消/清理及错误语义不变。
+
+反证验证：临时将调用的zero改为nil，测试退出1，start/read两次均明确在tolerance断言失败；随后恢复zero。针对性ADB 11项通过，最终完整Core **507/507、67 suites通过，23.738秒**；git diff --check通过。此记录不代替修复提交后的远端CI结果。

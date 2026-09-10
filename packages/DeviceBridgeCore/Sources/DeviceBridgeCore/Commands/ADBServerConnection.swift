@@ -413,8 +413,13 @@ final class ADBClientSocket: @unchecked Sendable {
 
     private let connection: NWConnection
     private let lifecycle = Lifecycle()
+    private let sleep: @Sendable (Duration, Duration?) async throws -> Void
 
-    init(host: NWEndpoint.Host, port: NWEndpoint.Port) {
+    init(host: NWEndpoint.Host, port: NWEndpoint.Port,
+         sleep: @escaping @Sendable (Duration, Duration?) async throws -> Void = { duration, tolerance in
+             try await Task.sleep(for: duration, tolerance: tolerance)
+         }) {
+        self.sleep = sleep
         connection = NWConnection(host: host, port: port, using: .tcp)
         connection.stateUpdateHandler = { [lifecycle] state in
             lifecycle.observe(state)
@@ -573,7 +578,7 @@ final class ADBClientSocket: @unchecked Sendable {
                 group.addTask { try await operation() }
                 group.addTask {
                     let remaining = ContinuousClock.now.duration(to: deadline)
-                    if remaining > .zero { try await Task.sleep(for: remaining, tolerance: .zero) }
+                    if remaining > .zero { try await self.sleep(remaining, .zero) }
                     self.cancel()
                     throw Failure.timedOut
                 }

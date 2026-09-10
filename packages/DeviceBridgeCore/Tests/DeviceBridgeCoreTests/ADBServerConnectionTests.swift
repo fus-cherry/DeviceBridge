@@ -147,30 +147,28 @@ struct ADBServerConnectionTests {
         #expect(socket.hasReachedTerminalState)
     }
 
-    @Test("held socket deadlines avoid scheduler coalescing slack and finish cleanup")
+    @Test("held socket deadlines request zero coalescing tolerance and finish cleanup")
     func heldSocketDeadlineIsPromptAndClean() async throws {
         let fake = try FakeADBServer()
         try await fake.start()
         defer { fake.stop() }
         let port = try #require(NWEndpoint.Port(rawValue: UInt16(fake.port)))
-        var overruns: [Duration] = []
+        let socket = ADBClientSocket(host: "127.0.0.1", port: port) { duration, tolerance in
+            // Verify the scheduling policy directly: actual wakeup latency also depends
+            // on executor/OS load, so it cannot prove whether coalescing was requested.
+            #expect(tolerance == .zero)
+            try await Task.sleep(for: duration, tolerance: tolerance)
+        }
+        try await socket.start(deadline: ContinuousClock.now.advanced(by: .seconds(2)))
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(100))
 
-        for _ in 0..<3 {
-            let socket = ADBClientSocket(host: "127.0.0.1", port: port)
-            try await socket.start(deadline: ContinuousClock.now.advanced(by: .seconds(1)))
-            let deadline = ContinuousClock.now.advanced(by: .seconds(1))
-
-            await #expect(throws: ADBClientSocket.Failure.timedOut) {
-                _ = try await socket.readExactly(1, deadline: deadline)
-            }
-
-            overruns.append(max(.zero, deadline.duration(to: .now)))
-            #expect(socket.hasReachedTerminalState)
+        await #expect(throws: ADBClientSocket.Failure.timedOut) {
+            _ = try await socket.readExactly(1, deadline: deadline)
         }
 
-        let medianOverrun = overruns.sorted()[1]
-        #expect(medianOverrun < .milliseconds(20),
-                "median timeout overrun was \(medianOverrun)")
+        // Keep a real held-socket integration check with enough scheduler headroom.
+        #expect(deadline.duration(to: .now) < .seconds(2))
+        #expect(socket.hasReachedTerminalState)
     }
 
     @Test("the retained execution socket rejects a changed transport ID")
