@@ -9,6 +9,9 @@ final class PhoneImagesViewModel: ObservableObject {
     @Published private(set) var catalog: ImageCatalog?
     @Published private(set) var preview: ImagePreview?
     @Published private(set) var selectedID: UUID?
+    @Published private(set) var selectedDownloadIDs: Set<UUID> = []
+    @Published private(set) var batchSummary: InterfaceMessage?
+    @Published private(set) var batchFailures: [String] = []
     @Published private(set) var isBusy = false
     @Published private(set) var thumbnails: [UUID: Data] = [:]
     @Published private(set) var isLoadingThumbnails = false
@@ -124,6 +127,9 @@ final class PhoneImagesViewModel: ObservableObject {
         replacementDestination = nil
         preview = nil
         selectedID = nil
+        selectedDownloadIDs.removeAll()
+        batchSummary = nil
+        batchFailures = []
         feedback = nil
         isBusy = true
         let source = source
@@ -173,6 +179,65 @@ final class PhoneImagesViewModel: ObservableObject {
                 guard revision == expected else { return }
                 preview = committed?.catalogID == catalog?.id ? committed : nil
                 feedback = Self.message(error)
+            }
+            isBusy = false
+            startThumbnails()
+        }
+    }
+
+    func toggleDownload(_ item: ImageItem) {
+        guard !stopped, !isBusy, catalog?.items.contains(where: { $0.id == item.id }) == true else { return }
+        if !selectedDownloadIDs.insert(item.id).inserted { selectedDownloadIDs.remove(item.id) }
+    }
+
+    func selectPageForDownload() {
+        guard !stopped, !isBusy else { return }
+        selectedDownloadIDs.formUnion(pageItems.map(\.id))
+    }
+
+    func clearDownloadSelection() {
+        guard !stopped, !isBusy else { return }
+        selectedDownloadIDs.removeAll()
+    }
+
+    // The model owns selection and serial orchestration; the service retains one original at
+    // a time and owns verified, exclusive file commits. Never buffer an entire selection.
+    func exportSelected(expectedRevision: Int, itemIDs: Set<UUID>, directory: URL) {
+        guard !stopped, !isBusy, revision == expectedRevision,
+              !itemIDs.isEmpty, itemIDs == selectedDownloadIDs, let catalog else { return }
+        let items = catalog.items.filter { itemIDs.contains($0.id) }
+        guard items.count == itemIDs.count else { return }
+        isBusy = true
+        feedback = nil
+        replacementDestination = nil
+        batchFailures = []
+        batchSummary = InterfaceMessage("Saved {0} of {1} · skipped or failed {2}",
+            arguments: ["0", String(items.count), "0"])
+        let previousThumbnail = cancelThumbnailWork()
+        task = Task {
+            await previousThumbnail?.value
+            guard revision == expectedRevision, !Task.isCancelled else { return }
+            var saved = 0
+            for item in items {
+                guard revision == expectedRevision, !Task.isCancelled else { return }
+                do {
+                    let original = try await service.preview(itemID: item.id)
+                    guard revision == expectedRevision, !Task.isCancelled else { return }
+                    preview = original
+                    selectedID = item.id
+                    _ = try await service.export(previewID: original.id,
+                        destination: directory.appendingPathComponent(item.displayName), replaceExisting: false)
+                    guard revision == expectedRevision, !Task.isCancelled else { return }
+                    saved += 1
+                } catch {
+                    let committed = await service.currentPreview
+                    guard revision == expectedRevision, !Task.isCancelled else { return }
+                    preview = committed?.catalogID == catalog.id ? committed : nil
+                    batchFailures.append(item.displayName)
+                    feedback = Self.message(error)
+                }
+                batchSummary = InterfaceMessage("Saved {0} of {1} · skipped or failed {2}",
+                    arguments: [String(saved), String(items.count), String(batchFailures.count)])
             }
             isBusy = false
             startThumbnails()
@@ -241,6 +306,9 @@ final class PhoneImagesViewModel: ObservableObject {
         replacementDestination = nil
         preview = nil
         selectedID = nil
+        selectedDownloadIDs.removeAll()
+        batchSummary = nil
+        batchFailures = []
         feedback = nil
         isBusy = true
         task = Task {

@@ -31,10 +31,35 @@ struct PhoneImagesView: View {
                     Button(language.text("Cancel")) { model.cancel() }.accessibilityIdentifier("images-cancel")
                 }
             }
+            HStack(alignment: .firstTextBaseline) {
+                Button(language.text("Download original…")) {
+                    if let preview = model.preview { save(preview) }
+                }
+                .disabled(!canAct || model.isBusy || model.preview == nil)
+                .accessibilityIdentifier("images-export")
+                Button(language.text("Download selected…")) { saveSelected() }
+                    .disabled(!canAct || model.isBusy || model.selectedDownloadIDs.isEmpty)
+                    .accessibilityIdentifier("images-export-selected")
+                Text(InterfaceMessage("{0} selected", arguments: [String(model.selectedDownloadIDs.count)]).render(in: language))
+                    .font(.caption)
+            }
+            Text(language.text("Check images to download several originals to a folder. Existing files are skipped."))
+                .font(.caption).foregroundStyle(.secondary)
+            if let summary = model.batchSummary {
+                Text(summary.render(in: language)).font(.caption)
+            }
+            if !model.batchFailures.isEmpty {
+                Text(model.batchFailures.joined(separator: ", "))
+                    .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+            }
             if let catalog = model.catalog {
                 HStack {
                     Text(InterfaceMessage("{0} images · page {1} of {2}", arguments: [String(catalog.items.count),
                         String(model.page + 1), String(model.pageCount)]).render(in: language))
+                    Button(language.text("Select this page")) { model.selectPageForDownload() }
+                        .disabled(!canAct || model.isBusy)
+                    Button(language.text("Clear selection")) { model.clearDownloadSelection() }
+                        .disabled(!canAct || model.isBusy || model.selectedDownloadIDs.isEmpty)
                     Spacer()
                     Button(language.text("Previous page")) { model.showPage(model.page - 1) }.disabled(model.page == 0)
                     Button(language.text("Next page")) { model.showPage(model.page + 1) }.disabled(model.page + 1 >= model.pageCount)
@@ -66,12 +91,7 @@ struct PhoneImagesView: View {
                         .accessibilityLabel(language.text("Selected phone image preview"))
                         .accessibilityIdentifier("images-preview")
                 }
-                HStack {
-                    Text("\(preview.pixelWidth) × \(preview.pixelHeight) · \(preview.mediaType)").font(.caption)
-                    Spacer()
-                    Button(language.text("Download original…")) { save(preview) }
-                        .disabled(!canAct || model.isBusy).accessibilityIdentifier("images-export")
-                }
+                Text("\(preview.pixelWidth) × \(preview.pixelHeight) · \(preview.mediaType)").font(.caption)
             }
             if let feedback = model.feedback {
                 Text(language.text(feedback)).font(.caption).foregroundStyle(.orange)
@@ -108,38 +128,61 @@ struct PhoneImagesView: View {
 
     private func thumbnailCell(_ item: ImageItem) -> some View {
         let selected = model.selectedID == item.id
-        return Button { model.select(item) } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                ZStack(alignment: .topTrailing) {
-                    ZStack {
-                        Rectangle().fill(.quaternary)
-                        if let bytes = model.thumbnails[item.id], let image = NSImage(data: bytes) {
-                            Image(nsImage: image).resizable().scaledToFit()
-                        } else if model.thumbnailErrors[item.id] != nil {
-                            Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
-                        } else {
-                            Image(systemName: "photo").font(.largeTitle).foregroundStyle(.secondary)
+        return VStack(alignment: .leading, spacing: 4) {
+            Toggle(language.text("Include in download"), isOn: Binding(
+                get: { model.selectedDownloadIDs.contains(item.id) },
+                set: { _ in model.toggleDownload(item) }))
+                .toggleStyle(.checkbox).font(.caption)
+                .disabled(!canAct || model.isBusy)
+                .accessibilityLabel("\(language.text("Include in download")): \(item.displayName)")
+            Button { model.select(item) } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    ZStack(alignment: .topTrailing) {
+                        ZStack {
+                            Rectangle().fill(.quaternary)
+                            if let bytes = model.thumbnails[item.id], let image = NSImage(data: bytes) {
+                                Image(nsImage: image).resizable().scaledToFit()
+                            } else if model.thumbnailErrors[item.id] != nil {
+                                Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                            } else {
+                                Image(systemName: "photo").font(.largeTitle).foregroundStyle(.secondary)
+                            }
+                        }.frame(height: 120).clipShape(RoundedRectangle(cornerRadius: 6))
+                        if selected {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.white, Color.accentColor)
+                                .font(.title3).padding(6)
                         }
-                    }.frame(height: 120).clipShape(RoundedRectangle(cornerRadius: 6))
-                    if selected {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.white, Color.accentColor)
-                            .font(.title3).padding(6)
                     }
+                    Text(item.displayName).font(.caption).lineLimit(1)
+                    Text(ByteCountFormatter.string(fromByteCount: item.byteLength, countStyle: .file))
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
-                Text(item.displayName).font(.caption).lineLimit(1)
-                Text(ByteCountFormatter.string(fromByteCount: item.byteLength, countStyle: .file))
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-            .padding(7)
-            .background(selected ? Color.accentColor.opacity(0.14) : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: selected ? 2 : 1))
-            .contentShape(RoundedRectangle(cornerRadius: 10))
-        }.buttonStyle(.plain).disabled(!canAct)
-            .accessibilityLabel(item.displayName)
-            .accessibilityValue(language.text(selected ? "Selected" : "Not selected"))
-            .help(model.thumbnailErrors[item.id].map { language.text($0) } ??
-                  "\(item.relativeDirectory) · \(language.text("Modified")): \(item.modifiedAt.formatted())")
+                .padding(7)
+                .background(selected ? Color.accentColor.opacity(0.14) : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: selected ? 2 : 1))
+                .contentShape(RoundedRectangle(cornerRadius: 10))
+            }.buttonStyle(.plain).disabled(!canAct || model.isBusy)
+                .accessibilityLabel(item.displayName)
+                .accessibilityValue(language.text(selected ? "Selected" : "Not selected"))
+                .help(model.thumbnailErrors[item.id].map { language.text($0) } ??
+                      "\(item.relativeDirectory) · \(language.text("Modified")): \(item.modifiedAt.formatted())")
+        }
+    }
+
+    private func saveSelected() {
+        let revision = model.revision
+        let itemIDs = model.selectedDownloadIDs
+        let panel = NSOpenPanel()
+        panel.title = language.text("Download selected…")
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.begin { response in
+            guard response == .OK, let directory = panel.url else { return }
+            model.exportSelected(expectedRevision: revision, itemIDs: itemIDs, directory: directory)
+        }
     }
 
     private func save(_ preview: ImagePreview) {

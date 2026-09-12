@@ -120,9 +120,52 @@ struct PhoneImagesModelChecks {
         try require(album.thumbnails.isEmpty, "source switch must clear thumbnails")
         try require(!FileManager.default.fileExists(atPath: directory.appending(path: "album-cache").path),
                     "source switch must drain and remove thumbnail originals")
+        // Multi-selection persists across pages; folder export does not require a preview.
+        album.load()
+        try await wait { !album.isBusy }
+        let batchItems = Array(album.catalog!.items.prefix(3))
+        for item in batchItems { album.toggleDownload(item) }
+        album.showPage(1)
+        album.suspendThumbnails()
+        try require(album.selectedDownloadIDs.count == 3, "page change lost checked images")
+        let batchDirectory = directory.appending(path: "downloads")
+        try FileManager.default.createDirectory(at: batchDirectory, withIntermediateDirectories: false)
+        let collision = batchDirectory.appendingPathComponent(batchItems[0].displayName)
+        try Data("keep".utf8).write(to: collision)
+        album.exportSelected(expectedRevision: album.revision, itemIDs: album.selectedDownloadIDs, directory: batchDirectory)
+        try await wait { !album.isBusy }
+        try require(try Data(contentsOf: collision) == Data("keep".utf8), "batch overwrote existing file")
+        for item in batchItems.dropFirst() {
+            try require(try Data(contentsOf: batchDirectory.appendingPathComponent(item.displayName)) == albumProvider.bytes,
+                        "batch did not continue after collision")
+        }
+        try require(album.batchFailures == [batchItems[0].displayName], "batch collision report")
+        try require(await albumService.currentPreview?.id == album.preview?.id, "batch preview/service mismatch")
+        let staleBatchRevision = album.revision
+        let staleBatchIDs = album.selectedDownloadIDs
+        album.clearDownloadSelection()
+        let staleFolder = directory.appending(path: "stale-batch")
+        album.exportSelected(expectedRevision: staleBatchRevision, itemIDs: staleBatchIDs, directory: staleFolder)
+        try require(!album.isBusy, "changed selection accepted stale folder panel")
+        for item in batchItems { album.toggleDownload(item) }
+        await albumProvider.suspendNextRead()
+        let cancelledFolder = directory.appending(path: "cancelled-batch")
+        try FileManager.default.createDirectory(at: cancelledFolder, withIntermediateDirectories: false)
+        album.exportSelected(expectedRevision: album.revision, itemIDs: album.selectedDownloadIDs, directory: cancelledFolder)
+        try await wait { await albumProvider.isSuspended }
+        album.cancel()
+        await albumProvider.resumeRead()
+        try await wait { !album.isBusy }
+        try require(try FileManager.default.contentsOfDirectory(atPath: cancelledFolder.path).isEmpty,
+                    "cancelled batch saved files")
+        album.changeSource(.androidPictures)
+        try await wait { !album.isBusy }
+        try require(album.selectedDownloadIDs.isEmpty && album.batchSummary == nil, "source change retained batch state")
+        album.exportSelected(expectedRevision: staleBatchRevision, itemIDs: staleBatchIDs, directory: staleFolder)
+        try require(!album.isBusy, "source change accepted stale batch")
         album.stop()
         try await wait { !album.isBusy }
-        print("PASS: image UI state — explicit reads, cancellation reconciliation, exact export, collision consent, stale save/confirmation, paged album/cache, selection priority and source cleanup; no desktop UI launched")
+        print("PASS: image UI state — explicit reads, cancellation reconciliation, exact export, collision consent, stale save/confirmation, paged album/cache, selection priority, source cleanup, multi-selection, batch collision continuation and cancellation; no desktop UI launched")
     }
 
     @MainActor
