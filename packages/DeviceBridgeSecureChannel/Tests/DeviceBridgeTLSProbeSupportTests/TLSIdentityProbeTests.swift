@@ -49,7 +49,10 @@ struct TLSIdentityProbeTests {
                 #expect(clientResult == "clientDisconnected")
                 #expect(serverResult == "peerClosed")
             case .sustain:
-                #expect(clientResult == "peerClosed")
+                // After established exchanges, server cancellation may arrive through either
+                // the receive callback or NWConnection.failed. Callback order is not guaranteed.
+                // The deadline result and exchange count below rule out handshake rejection.
+                #expect(clientResult == "peerClosed" || clientResult == "connectionRejected")
                 #expect(serverResult == "deadlineExpired")
                 #expect(client.latencyMilliseconds.count >= 2)
                 #expect((0.35...1.5).contains(client.connectedSeconds))
