@@ -1,4 +1,12 @@
 {
+  "The iPhone command check timed out. Apple's device service may be unresponsive.": "iPhone 连接检查超时，Mac 上的 Apple 设备服务可能无响应。",
+  "Keep the iPhone unlocked and retry. If it still fails, use Repair connection to restart Apple's device service.": "请保持 iPhone 解锁并重试。如仍失败，可使用“修复连接”重启 Apple 设备服务。",
+  "Apple's device service could not be restarted.": "无法重启 Apple 设备服务。",
+  "Close Xcode and other device tools, then try Repair connection again.": "请关闭 Xcode 和其他设备工具，再次尝试修复连接。",
+  "Repair connection…": "修复连接…",
+  "Restart Apple's device service?": "重启 Apple 设备服务？",
+  "Restart and reconnect": "重启并重新连接",
+  "This briefly interrupts device connections in Xcode and other tools for your Mac user. DeviceBridge then checks the iPhone again. VPN settings, device pairing and phone data are unchanged.": "这会短暂中断当前 Mac 用户下 Xcode 等工具的设备连接，随后 DeviceBridge 会重新检查 iPhone。不会更改 VPN 设置、信任配对或手机数据。",
   "Download selected…": "下载所选图片…",
   "{0} selected": "已勾选 {0} 张",
   "Check images to download several originals to a folder. Existing files are skipped.": "勾选多张图片后，可将原图下载到指定文件夹；已有同名文件会跳过。",

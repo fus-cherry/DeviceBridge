@@ -67,6 +67,11 @@ public struct DeviceCommandProbe: Sendable {
 
         do {
             let result = try await runner.run(request)
+            if device.identity.platform == .iOS, result.exitCode != 0,
+               result.standardErrorString.contains("Command timeout of "),
+               result.standardErrorString.contains(" seconds exceeded.") {
+                return iosTimeout()
+            }
             guard result.exitCode == 0 else {
                 return .unavailable(OperationFailure(
                     code: .disconnected,
@@ -89,6 +94,7 @@ public struct DeviceCommandProbe: Sendable {
         } catch HostCommandError.cancelled {
             return .unavailable(OperationFailure(code: .cancelled, safeMessage: "Readiness check cancelled."))
         } catch HostCommandError.timedOut {
+            if device.identity.platform == .iOS { return iosTimeout() }
             return .unavailable(OperationFailure(
                 code: .timeout,
                 safeMessage: "The readiness check timed out.",
@@ -101,6 +107,14 @@ public struct DeviceCommandProbe: Sendable {
                 recoveryAction: "Check the host tools and reconnect the device."
             ))
         }
+    }
+
+    private func iosTimeout() -> DeviceCommandProbeOutcome {
+        .unavailable(OperationFailure(
+            code: .timeout,
+            safeMessage: "The iPhone command check timed out. Apple's device service may be unresponsive.",
+            recoveryAction: "Keep the iPhone unlocked and retry. If it still fails, use Repair connection to restart Apple's device service."
+        ))
     }
 
     private func missingTool(_ name: String) -> DeviceCommandProbeOutcome {

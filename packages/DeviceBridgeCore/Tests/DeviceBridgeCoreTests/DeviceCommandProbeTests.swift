@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import DeviceBridgeCore
@@ -78,6 +79,47 @@ struct DeviceCommandProbeTests {
         ).probe(try device(platform: .android, transportID: "10"))
 
         #expect(outcome.failure?.code == .cancelled)
+    }
+
+    @Test("devicectl's own timeout is not reported as missing trust")
+    func iosToolTimeout() async throws {
+        let runner = ProbeRecordingRunner { _ in
+            HostCommandResult(exitCode: 2, standardOutput: Data(), standardError:
+                Data("ERROR: Command timeout of 5.0 seconds exceeded. Assuming command got stuck and aborting.".utf8))
+        }
+        let outcome = await DeviceCommandProbe(adbURL: nil,
+            xcrunURL: URL(fileURLWithPath: "/usr/bin/xcrun"), runner: runner)
+            .probe(try device(platform: .iOS, transportID: "core-timeout"))
+        #expect(outcome.failure?.code == .timeout)
+        #expect(outcome.failure?.recoveryAction?.contains("Repair connection") == true)
+        #expect(await runner.requests.count == 1) // No automatic service restart.
+    }
+
+    @Test("host timeout offers the same iOS recovery without changing Android failures")
+    func iosHostTimeout() async throws {
+        let runner = ProbeRecordingRunner { _ in throw HostCommandError.timedOut }
+        let outcome = await DeviceCommandProbe(adbURL: nil,
+            xcrunURL: URL(fileURLWithPath: "/usr/bin/xcrun"), runner: runner)
+            .probe(try device(platform: .iOS, transportID: "core-timeout"))
+        #expect(outcome.failure?.code == .timeout)
+        #expect(outcome.failure?.recoveryAction?.contains("Repair connection") == true)
+    }
+
+    @Test("explicit service recovery targets only the current user's exact service", arguments: [Int32(0), 1, 2])
+    func serviceRecovery(exitCode: Int32) async throws {
+        let runner = ProbeRecordingRunner { _ in
+            HostCommandResult(exitCode: exitCode, standardOutput: Data(), standardError: Data())
+        }
+        do {
+            try await IOSDeviceServiceRecovery(runner: runner).restart()
+            #expect(exitCode == 0 || exitCode == 1)
+        } catch {
+            #expect(exitCode == 2)
+        }
+        let requests = await runner.requests
+        #expect(requests.count == 1)
+        #expect(requests.first?.executableURL.path == "/usr/bin/pkill")
+        #expect(requests.first?.arguments == ["-KILL", "-u", String(geteuid()), "-x", "CoreDeviceService"])
     }
 
     private func device(platform: DevicePlatform, transportID: String) throws -> DeviceRecord {

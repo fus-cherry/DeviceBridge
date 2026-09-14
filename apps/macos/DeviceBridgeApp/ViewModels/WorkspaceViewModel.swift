@@ -686,7 +686,25 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         }
     }
 
+    var iosConnectionRepairRevision: Int? {
+        guard !isSelecting, case let .failed(device, failure) = deviceSelection,
+              device.identity.platform == .iOS,
+              [.timeout, .disconnected, .failure].contains(failure.code) else { return nil }
+        return selectionRevision
+    }
+
+    func repairIOSConnection(identity: DeviceIdentity, expectedRevision: Int) {
+        guard iosConnectionRepairRevision == expectedRevision,
+              deviceSelection?.device.identity == identity else { return }
+        select(identity, restartingIOSService: true)
+    }
+
     func select(_ identity: DeviceIdentity, resuming context: HelperSessionContext? = nil) {
+        select(identity, resuming: context, restartingIOSService: false)
+    }
+
+    private func select(_ identity: DeviceIdentity, resuming context: HelperSessionContext? = nil,
+                        restartingIOSService: Bool) {
         guard let candidate = devices.first(where: { $0.identity == identity }) else {
             diagnostics.append("The selected device is no longer available.")
             return
@@ -789,6 +807,19 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                     self.connectionHealth = .actionRequired
                     self.diagnostics.append("The selected device is no longer available.")
                     return
+                }
+                if restartingIOSService {
+                    do {
+                        try await IOSDeviceServiceRecovery(runner: self.runner).restart()
+                    } catch {
+                        guard !Task.isCancelled, selectionRevision == revision else { return }
+                        self.deviceSelection = .failed(device, OperationFailure(code: .failure,
+                            safeMessage: "Apple's device service could not be restarted.",
+                            recoveryAction: "Close Xcode and other device tools, then try Repair connection again."))
+                        self.connectionHealth = .actionRequired
+                        return
+                    }
+                    guard !Task.isCancelled, selectionRevision == revision else { return }
                 }
                 if !self.arguments.contains("--fixture-devices") {
                     let outcome = await DeviceCommandProbe(

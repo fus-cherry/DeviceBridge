@@ -149,6 +149,8 @@ struct WorkspaceView: View {
     @Environment(\.interfaceLanguage) private var language
     @State private var selectedModule: WorkspaceModule = .clipboard
     @State private var showsAgentGuide = false
+    @State private var confirmsIOSConnectionRepair = false
+    @State private var iosRepairProposal: (identity: DeviceIdentity, revision: Int)?
 
     var body: some View {
         NavigationSplitView {
@@ -298,12 +300,30 @@ struct WorkspaceView: View {
                 Button(language.text("Retry")) { model.select(selection.device.identity) }
                     .disabled(model.isSelecting)
                     .accessibilityIdentifier("device-selection-retry")
+                if let revision = model.iosConnectionRepairRevision {
+                    Button(language.text("Repair connection…")) {
+                        iosRepairProposal = (selection.device.identity, revision)
+                        confirmsIOSConnectionRepair = true
+                    }
+                    .accessibilityIdentifier("device-selection-repair")
+                }
             }
             Spacer()
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityIdentifier("device-selection-feedback")
+        .alert(language.text("Restart Apple's device service?"), isPresented: $confirmsIOSConnectionRepair) {
+            Button(language.text("Restart and reconnect")) {
+                if let proposal = iosRepairProposal {
+                    model.repairIOSConnection(identity: proposal.identity, expectedRevision: proposal.revision)
+                }
+                iosRepairProposal = nil
+            }
+            Button(language.text("Cancel"), role: .cancel) { iosRepairProposal = nil }
+        } message: {
+            Text(language.text("This briefly interrupts device connections in Xcode and other tools for your Mac user. DeviceBridge then checks the iPhone again. VPN settings, device pairing and phone data are unchanged."))
+        }
     }
 
     private func selectedDeviceView(_ device: DeviceRecord) -> some View {
