@@ -307,7 +307,7 @@ private actor IOSManagerCommandRunner: HostCommandRunning {
         observedCancellation = observedCancellation || Task.isCancelled
         if writesProducts, let index = request.arguments.firstIndex(of: "-derivedDataPath") {
             let products = URL(fileURLWithPath: request.arguments[index + 1]).appendingPathComponent("Build/Products")
-            for name in ["DeviceBridgeRunnerUITests-Runner.app", "DeviceBridgeHost.app"] {
+            for name in ["DeviceBridgeRunnerUITests-Runner.app", "DeviceBridgeHost.app", "DeviceBridgeClipboardHost.app"] {
                 let app = products.appendingPathComponent("Debug-iphoneos/" + name)
                 try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
                 try Data(String(requests.count).utf8).write(to: app.appendingPathComponent("binary"))

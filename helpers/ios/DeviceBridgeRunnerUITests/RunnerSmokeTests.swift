@@ -234,7 +234,7 @@ final class RunnerSmokeTests: XCTestCase {
 
     @MainActor
     func testManagedChannel() async throws {
-        try await runManagedChannel(clipboardHandler: RunnerClipboardHandler())
+        try await runManagedChannel(clipboardHandler: nil)
     }
 
     /// Only the host's separately opted-in physical test selects this entry. Restored content
@@ -245,14 +245,14 @@ final class RunnerSmokeTests: XCTestCase {
             throw XCTSkip("Preserving general-pasteboard write test is not opted in")
         }
         let probe = PreservingClipboardWriteProbe(pasteboard: .general)
-        try await runManagedChannel(clipboardHandler: RunnerClipboardHandler(
+        try await runManagedChannel(clipboardHandler: ActiveClipboardHandler(
             commands: ClipboardCommands(clipboard: probe)))
         let restored = await probe.outcome == .restored
         XCTAssertTrue(restored, "The physical write must complete and original items must be restored")
     }
 
     @MainActor
-    private func runManagedChannel(clipboardHandler: any IOSRunnerClipboardHandling) async throws {
+    private func runManagedChannel(clipboardHandler: (any IOSRunnerClipboardHandling)?) async throws {
         let entered = ContinuousClock.now
         let environment = ProcessInfo.processInfo.environment
         guard let rawLaunch = environment["DEVICEBRIDGE_PUBLIC_LAUNCH"],
@@ -264,8 +264,8 @@ final class RunnerSmokeTests: XCTestCase {
             let configuration = try ManagedRunnerConfiguration(launch: rawLaunch, certificate: rawCertificate, lifetime: rawLifetime)
             let deadline = entered.advanced(by: configuration.maximumLifetime)
             try Task.checkCancellation()
-            // Start on Home. The host activates this exact runner for each explicit clipboard
-            // request after authentication; identity and heartbeat never read phone content.
+            // The background runner is intentionally limited to screenshot and device metadata.
+            // Clipboard uses the separately installed foreground DeviceBridgeHost application.
             XCUIDevice.shared.press(.home)
             let identity = try EphemeralTLSIdentity.create()
             let publicBytes = try PublicBootstrapRecord.encode(launchID: configuration.launchID,

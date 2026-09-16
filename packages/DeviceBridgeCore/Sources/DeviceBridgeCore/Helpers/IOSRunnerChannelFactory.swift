@@ -12,7 +12,6 @@ public struct IOSRunnerChannelFactory: IOSRunnerChannelPreparing {
         let endpoint = IOSRunnerUSBEndpoint(launch: launch, hostCertificateDER: identity.certificateDER,
             helperBuild: IOSRunnerSessionServer.helperBuild, reader: IOSRunnerPublicRecordReader(xcrunURL: xcrunURL))
         return IOSRunnerChannel(launch: launch, identity: identity, endpoint: endpoint,
-            helperBuild: IOSRunnerSessionServer.helperBuild,
-            foreground: IOSRunnerForegroundActivator(xcrunURL: xcrunURL))
+            helperBuild: IOSRunnerSessionServer.helperBuild)
     }
 }

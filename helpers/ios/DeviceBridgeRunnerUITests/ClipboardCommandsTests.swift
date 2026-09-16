@@ -4,18 +4,16 @@ import DeviceBridgeProtocol
 
 final class ClipboardCommandsTests: XCTestCase {
     @MainActor
-    func testInactiveUIKitCannotQualifyClipboardFromXCTestForegroundAlone() {
-        let runnerID = "dev.debugutility.DeviceBridgeRunnerUITests.xctrunner"
+    func testOnlyActiveClipboardHostQualifies() {
+        let hostID = "dev.debugutility.DeviceBridgeClipboardHost"
         for state in [UIApplication.State.inactive, .background] {
-            XCTAssertFalse(XCTestRunnerForegroundController.permitsClipboard(bundleIdentifier: runnerID,
-                applicationState: state, runnerState: .runningForeground))
+            XCTAssertFalse(ClipboardHostForegroundController.permitsClipboard(bundleIdentifier: hostID,
+                applicationState: state))
         }
-        XCTAssertTrue(XCTestRunnerForegroundController.permitsClipboard(bundleIdentifier: runnerID,
-            applicationState: .active, runnerState: .runningForeground))
-        XCTAssertFalse(XCTestRunnerForegroundController.permitsClipboard(bundleIdentifier: runnerID,
-            applicationState: .active, runnerState: .runningBackground))
-        XCTAssertFalse(XCTestRunnerForegroundController.permitsClipboard(bundleIdentifier: "another.app",
-            applicationState: .active, runnerState: .runningForeground))
+        XCTAssertTrue(ClipboardHostForegroundController.permitsClipboard(bundleIdentifier: hostID,
+            applicationState: .active))
+        XCTAssertFalse(ClipboardHostForegroundController.permitsClipboard(bundleIdentifier: "another.app",
+            applicationState: .active))
     }
 
     @MainActor
@@ -132,7 +130,7 @@ final class ClipboardCommandsTests: XCTestCase {
     func testReadWaitsForTransientForegroundLossAfterSystemReadBeforePublishing() async throws {
         let clipboard = SuspendedClipboard()
         let foreground = ForegroundFixture()
-        let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
+        let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
         var completed = false
         let work = Task {
             let result = await handler.handle(clipboardRequest(.clipboardRead))
@@ -149,7 +147,7 @@ final class ClipboardCommandsTests: XCTestCase {
         XCTAssertEqual(result.status, .success)
         XCTAssertEqual(result.payload, [
             "text": .string("late fixture content"),
-            "foregroundDisposition": .string("runnerRemainsForeground"),
+            "foregroundDisposition": .string("clipboardHostRemainsForeground"),
         ])
         XCTAssertEqual(foreground.unexpectedHomeCount, 0, "An explicit transaction must not replace the prior app with Home")
     }
@@ -159,7 +157,7 @@ final class ClipboardCommandsTests: XCTestCase {
         for cancel in [true, false] {
             let clipboard = SuspendedClipboard()
             let foreground = ForegroundFixture()
-            let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
+            let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
             var request = clipboardRequest(.clipboardRead)
             request.expiresAt = Date().addingTimeInterval(0.25)
             let work = Task { await handler.handle(request) }
@@ -178,11 +176,11 @@ final class ClipboardCommandsTests: XCTestCase {
     }
 
     @MainActor
-    func testHandlerWaitsForHostActivationToBecomeForegroundWithoutEarlyRead() async {
+    func testHandlerWaitsForDedicatedHostForegroundBeforeClipboardRead() async {
         let clipboard = ClipboardDouble(readText: "settled fixture")
         let foreground = ForegroundFixture()
         foreground.isForeground = false
-        let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
+        let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
         let work = Task { await handler.handle(clipboardRequest(.clipboardRead)) }
         let deadline = ContinuousClock.now.advanced(by: .seconds(1))
         while foreground.queryCount == 0, ContinuousClock.now < deadline { await Task.yield() }
@@ -193,7 +191,7 @@ final class ClipboardCommandsTests: XCTestCase {
         XCTAssertEqual(result.status, .success)
         XCTAssertEqual(result.payload, [
             "text": .string("settled fixture"),
-            "foregroundDisposition": .string("runnerRemainsForeground"),
+            "foregroundDisposition": .string("clipboardHostRemainsForeground"),
         ])
         XCTAssertEqual(foreground.unexpectedHomeCount, 0, "Foreground settlement must not end at Home")
     }
@@ -203,7 +201,7 @@ final class ClipboardCommandsTests: XCTestCase {
         let clipboard = ClipboardDouble()
         let foreground = ForegroundFixture()
         foreground.isForeground = false
-        let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
+        let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
         var request = clipboardRequest(.clipboardWrite, text: "must not write")
         request.expiresAt = Date().addingTimeInterval(0.1)
         let result = await handler.handle(request)
@@ -216,7 +214,7 @@ final class ClipboardCommandsTests: XCTestCase {
     func testHandlerAcceptsOptionalSensitiveBooleanAndRejectsUnknownWriteFields() async {
         for sensitive in [true, false] {
             let clipboard = ClipboardDouble()
-            let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard: clipboard),
+            let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard: clipboard),
                 foreground: ForegroundFixture())
             var request = clipboardRequest(.clipboardWrite, text: "fixture")
             request.payload["sensitive"] = .bool(sensitive)
@@ -224,13 +222,13 @@ final class ClipboardCommandsTests: XCTestCase {
             XCTAssertEqual(result.status, .success)
             XCTAssertEqual(result.payload, [
                 "written": .bool(true),
-                "foregroundDisposition": .string("runnerRemainsForeground"),
+                "foregroundDisposition": .string("clipboardHostRemainsForeground"),
             ])
             XCTAssertEqual(clipboard.writtenText, "fixture")
         }
         for extra: [String: JSONValue] in [["sensitive": .string("true")], ["unexpected": .bool(true)]] {
             let clipboard = ClipboardDouble()
-            let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard: clipboard),
+            let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard: clipboard),
                 foreground: ForegroundFixture())
             var request = clipboardRequest(.clipboardWrite, text: "must not write")
             request.payload.merge(extra) { _, new in new }
@@ -299,7 +297,7 @@ final class ClipboardCommandsTests: XCTestCase {
 
     @MainActor
     func testUnverifiedWriteCannotPublishSuccess() async {
-        let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard:
+        let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard:
             ClipboardDouble(writeError: ClipboardAccessError.unverified)), foreground: ForegroundFixture())
         let result = await handler.handle(clipboardRequest(.clipboardWrite, text: "fixture"))
         XCTAssertEqual(result.status, .failure)
@@ -311,7 +309,7 @@ final class ClipboardCommandsTests: XCTestCase {
     func testHandlerExpiryReleasesOwnershipWithoutSwitchingToHome() async {
         let clipboard = SuspendedClipboard()
         let foreground = ForegroundFixture()
-        let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
+        let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
         var request = clipboardRequest(.clipboardRead)
         request.expiresAt = Date().addingTimeInterval(0.5)
         let work = Task { await handler.handle(request) }
@@ -328,7 +326,7 @@ final class ClipboardCommandsTests: XCTestCase {
     @MainActor
     func testHandlerReadPublishesOnlyCorrelatedTextWithoutSwitchingToHome() async {
         let foreground = ForegroundFixture()
-        let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard:
+        let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard:
             ClipboardDouble(readText: "设备 📋\ncomplete fixture")), foreground: foreground)
         let request = clipboardRequest(.clipboardRead)
         let result = await handler.handle(request)
@@ -336,7 +334,7 @@ final class ClipboardCommandsTests: XCTestCase {
         XCTAssertEqual(result.status, .success)
         XCTAssertEqual(result.payload, [
             "text": .string("设备 📋\ncomplete fixture"),
-            "foregroundDisposition": .string("runnerRemainsForeground"),
+            "foregroundDisposition": .string("clipboardHostRemainsForeground"),
         ])
         XCTAssertNil(result.error)
         XCTAssertEqual(foreground.unexpectedHomeCount, 0)
@@ -346,12 +344,12 @@ final class ClipboardCommandsTests: XCTestCase {
     func testHandlerWritePublishesOnlyAcknowledgement() async {
         let clipboard = ClipboardDouble()
         let foreground = ForegroundFixture()
-        let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
+        let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
         let result = await handler.handle(clipboardRequest(.clipboardWrite, text: "fixture ✅"))
         XCTAssertEqual(result.status, .success)
         XCTAssertEqual(result.payload, [
             "written": .bool(true),
-            "foregroundDisposition": .string("runnerRemainsForeground"),
+            "foregroundDisposition": .string("clipboardHostRemainsForeground"),
         ])
         XCTAssertEqual(clipboard.writtenText, "fixture ✅")
         XCTAssertEqual(foreground.unexpectedHomeCount, 0)
@@ -362,7 +360,7 @@ final class ClipboardCommandsTests: XCTestCase {
         let clipboard = ClipboardDouble(readText: "private fixture")
         let foreground = ForegroundFixture()
         foreground.isForeground = false
-        let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
+        let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
         let background = await handler.handle(clipboardRequest(.clipboardRead))
         XCTAssertEqual(background.status, .actionRequired)
         XCTAssertNil(background.payload)
@@ -378,7 +376,7 @@ final class ClipboardCommandsTests: XCTestCase {
 
     @MainActor
     func testHandlerFailureNeverIncludesForeignErrorOrContent() async {
-        let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard:
+        let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard:
             ClipboardDouble(readError: ClipboardAccessError.denied)), foreground: ForegroundFixture())
         let result = await handler.handle(clipboardRequest(.clipboardRead))
         XCTAssertEqual(result.status, .permissionDenied)
@@ -390,7 +388,7 @@ final class ClipboardCommandsTests: XCTestCase {
     func testHandlerCancellationReleasesOwnershipWithoutSwitchingToHome() async {
         let clipboard = SuspendedClipboard()
         let foreground = ForegroundFixture()
-        let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
+        let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
         let work = Task { await handler.handle(clipboardRequest(.clipboardRead)) }
         guard await waitForRead(clipboard) else { work.cancel(); return }
         work.cancel()
@@ -407,7 +405,7 @@ final class ClipboardCommandsTests: XCTestCase {
     func testHandlerConcurrentRequestCannotReplaceOwnerAndUserAppIsPreserved() async {
         let clipboard = SuspendedClipboard()
         let foreground = ForegroundFixture()
-        let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
+        let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
         let work = Task { await handler.handle(clipboardRequest(.clipboardRead)) }
         guard await waitForRead(clipboard) else { work.cancel(); return }
         let second = await handler.handle(clipboardRequest(.clipboardWrite, text: "must not write"))
@@ -425,7 +423,7 @@ final class ClipboardCommandsTests: XCTestCase {
     func testHandlerLateCompletionDoesNotAffectNewOperationForeground() async {
         let clipboard = SuspendedClipboard()
         let foreground = ForegroundFixture()
-        let handler = RunnerClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
+        let handler = ActiveClipboardHandler(commands: ClipboardCommands(clipboard: clipboard), foreground: foreground)
         let old = Task { await handler.handle(clipboardRequest(.clipboardRead)) }
         guard await waitForRead(clipboard) else { old.cancel(); return }
         old.cancel()
@@ -689,11 +687,11 @@ private actor SuspendedClipboard: ClipboardAccessing {
 }
 
 @MainActor
-private final class ForegroundFixture: RunnerForegroundControlling {
+private final class ForegroundFixture: ClipboardForegroundControlling {
     var isForeground = true
     private(set) var unexpectedHomeCount = 0
     private(set) var queryCount = 0
-    func isRunnerForeground() -> Bool { queryCount += 1; return isForeground }
+    func isClipboardHostForeground() -> Bool { queryCount += 1; return isForeground }
 }
 
 private func clipboardRequest(_ action: HelperAction, text: String? = nil) -> HelperRequest {

@@ -24,7 +24,7 @@ import Foundation
             let timing = ProcessInfo.processInfo.environment["DEVICEBRIDGE_WORKSPACE_MEMORY_TIMING"] == "1"
             let sampleCount = extended ? 120 : (timing ? 60 : 6)
             let tracing = ProcessInfo.processInfo.environment["DEVICEBRIDGE_WORKSPACE_MEMORY_TRACE"] == "1"
-            let workspace = WorkspaceViewModel(arguments: [], iosRunnerFactory: { _ in MemoryOnlyRunner() },
+            let workspace = WorkspaceViewModel(arguments: [], iosScreenshotRunnerFactory: { _ in MemoryOnlyRunner() },
                 iosMemoryProvider: tracing ? TracingMemoryProvider() : nil)
             model = workspace
             stage = "deviceDiscovery"

@@ -3,6 +3,28 @@ import Testing
 import DeviceBridgeProtocol
 @testable import DeviceBridgeCore
 
+private struct PhysicalExitCodeProcessRunner: HostCommandRunning {
+    let deadline: ContinuousClock.Instant
+
+    func run(_ request: HostCommandRequest) async throws -> HostCommandResult {
+        let allowed = ["PATH", "HOME", "TMPDIR", "DEVELOPER_DIR", "LANG", "LC_ALL"]
+        let environment = ProcessInfo.processInfo.environment.filter { allowed.contains($0.key) }
+        try Task.checkCancellation()
+        let remaining = ContinuousClock.now.duration(to: deadline)
+        guard remaining > .zero else { throw HostCommandError.timedOut }
+        let process = try IOSRunnerProcess.start(executableURL: request.executableURL,
+            arguments: request.arguments, environment: environment, lifetime: min(request.timeout, remaining))
+        let exit = await withTaskCancellationHandler {
+            await process.waitForExit()
+        } onCancel: { Task { await process.stop() } }
+        try Task.checkCancellation()
+        guard ContinuousClock.now < deadline, case let .exited(code) = exit else {
+            throw HostCommandError.timedOut
+        }
+        return HostCommandResult(exitCode: code, standardOutput: Data(), standardError: Data())
+    }
+}
+
 struct IOSRunnerManagedPhysicalTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["DEVICEBRIDGE_MANAGED_DEVICE"] != nil))
     func signedNativeLauncherMaintainsAuthenticatedPhoneSessionAndStops() async throws {
@@ -249,12 +271,12 @@ struct IOSRunnerManagedPhysicalTests {
         try #require(ProcessInfo.processInfo.environment["DEVICEBRIDGE_MANAGED_CLIPBOARD_CROSS_APP"] == "1")
         let identifier = UUID().uuidString
         let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
-        let launched = try await IOSRunnerForegroundProcessRunner(deadline: .now.advanced(by: .seconds(8)))
+        let launched = try await PhysicalExitCodeProcessRunner(deadline: .now.advanced(by: .seconds(8)))
             .run(HostCommandRequest(executableURL: xcrun,
             arguments: ["devicectl", "device", "process", "launch", "--device", device,
                 // Only our static test Host restarts so its launch arguments take effect.
                 // The native Runner and the user's target app are never restarted here.
-                "--activate", "--terminate-existing", "--timeout", "5", "dev.debugutility.DeviceBridgeHost",
+                "--activate", "--terminate-existing", "--timeout", "5", "dev.debugutility.DeviceBridgeClipboardHost",
                 multipleItems ? "--devicebridge-clipboard-source-multiple" : "--devicebridge-clipboard-source", identifier],
             timeout: .seconds(8), maximumOutputBytes: 0))
         try #require(launched.exitCode == 0)
@@ -263,10 +285,10 @@ struct IOSRunnerManagedPhysicalTests {
         var lastStage = "unavailable"
         for _ in 0..<3 {
             try #require(await HelperSessionAuthenticator(channel: channel).verifyExisting(context))
-            let copied = try await IOSRunnerForegroundProcessRunner(deadline: .now.advanced(by: .seconds(8)))
+            let copied = try await PhysicalExitCodeProcessRunner(deadline: .now.advanced(by: .seconds(8)))
                 .run(HostCommandRequest(executableURL: xcrun,
                 arguments: ["devicectl", "device", "copy", "from", "--device", device,
-                    "--domain-type", "appDataContainer", "--domain-identifier", "dev.debugutility.DeviceBridgeHost",
+                    "--domain-type", "appDataContainer", "--domain-identifier", "dev.debugutility.DeviceBridgeClipboardHost",
                     "--source", "Documents/DeviceBridgeClipboardProbe/" + identifier + ".ready",
                     "--destination", receipt.path, "--timeout", "5"],
                 timeout: .seconds(8), maximumOutputBytes: 0))
@@ -351,7 +373,7 @@ struct IOSRunnerManagedPhysicalTests {
     private func copySignedProducts(from original: URL, to products: IOSRunnerBuildProducts) throws {
         let destination = products.productsDirectoryURL.appendingPathComponent("Debug-iphoneos")
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-        for name in ["DeviceBridgeRunnerUITests-Runner.app", "DeviceBridgeHost.app"] {
+        for name in ["DeviceBridgeRunnerUITests-Runner.app", "DeviceBridgeHost.app", "DeviceBridgeClipboardHost.app"] {
             try FileManager.default.copyItem(at: original.appendingPathComponent("Debug-iphoneos/" + name),
                 to: destination.appendingPathComponent(name))
         }

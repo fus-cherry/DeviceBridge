@@ -1,40 +1,37 @@
 import UIKit
-import XCTest
 import DeviceBridgeProtocol
 import DeviceBridgeSecureChannel
 
 @MainActor
-protocol RunnerForegroundControlling: AnyObject {
-    func isRunnerForeground() -> Bool
+protocol ClipboardForegroundControlling: AnyObject {
+    func isClipboardHostForeground() -> Bool
 }
 
 @MainActor
-final class XCTestRunnerForegroundController: RunnerForegroundControlling {
-    private static let runnerID = "dev.debugutility.DeviceBridgeRunnerUITests.xctrunner"
-    private let runner = XCUIApplication(bundleIdentifier: runnerID)
+final class ClipboardHostForegroundController: ClipboardForegroundControlling {
+    private static let hostID = "dev.debugutility.DeviceBridgeClipboardHost"
 
-    func isRunnerForeground() -> Bool {
+    func isClipboardHostForeground() -> Bool {
         Self.permitsClipboard(bundleIdentifier: Bundle.main.bundleIdentifier,
-            applicationState: UIApplication.shared.applicationState, runnerState: runner.state)
+            applicationState: UIApplication.shared.applicationState)
     }
 
-    static func permitsClipboard(bundleIdentifier: String?, applicationState: UIApplication.State,
-                                 runnerState: XCUIApplication.State) -> Bool {
-        bundleIdentifier == runnerID && applicationState == .active && runnerState == .runningForeground
+    static func permitsClipboard(bundleIdentifier: String?, applicationState: UIApplication.State) -> Bool {
+        bundleIdentifier == hostID && applicationState == .active
     }
 
 }
 
-/// One MainActor operation owns admission and publication. The host activates the existing runner
-/// only for an explicit request; this adapter neither switches to Home nor approves prompts.
+/// One MainActor operation owns admission and publication. Foreground launch belongs to the
+/// dedicated clipboard Host process; the handler never activates an application or presses Home.
 @MainActor
-final class RunnerClipboardHandler: IOSRunnerClipboardHandling {
+final class ActiveClipboardHandler: IOSRunnerClipboardHandling {
     private let commands: ClipboardCommands
-    private let foreground: any RunnerForegroundControlling
+    private let foreground: any ClipboardForegroundControlling
     private var operationID: UUID?
 
     init(commands: ClipboardCommands = ClipboardCommands(),
-         foreground: any RunnerForegroundControlling = XCTestRunnerForegroundController()) {
+         foreground: any ClipboardForegroundControlling = ClipboardHostForegroundController()) {
         self.commands = commands
         self.foreground = foreground
     }
@@ -50,7 +47,7 @@ final class RunnerClipboardHandler: IOSRunnerClipboardHandling {
         let context = ClipboardAccessContext(expiresAt: request.expiresAt,
             deadline: ContinuousClock.now.advanced(by: .seconds(seconds)), isForeground: { [weak self] in
                 guard let self, self.operationID == id else { return false }
-                return self.foreground.isRunnerForeground()
+                return self.foreground.isClipboardHostForeground()
             })
         // An OS read can remain suspended after cancellation. Its independent deadline still
         // invalidates ownership without joining that read's eventual return.
@@ -62,9 +59,8 @@ final class RunnerClipboardHandler: IOSRunnerClipboardHandling {
         defer { expiry.cancel(); finish(id) }
         return await withTaskCancellationHandler {
             do {
-                // CoreDevice launch completion precedes the visible foreground transition.
-                // Wait only for that state (never activate or approve anything), within both
-                // the original request budget and a short settlement bound.
+                // The dedicated Host launch returns before the visible transition settles.
+                // Wait only for that state and never activate another app or approve a prompt.
                 let settlement = min(context.deadline, ContinuousClock.now.advanced(by: .seconds(2)))
                 while !context.isForeground() {
                     try context.check()
@@ -94,7 +90,7 @@ final class RunnerClipboardHandler: IOSRunnerClipboardHandling {
             } catch ClipboardAccessError.expired {
                 return failure(request, .expired, "clipboard.expired", "The clipboard request expired.")
             } catch {
-                return failure(request, .actionRequired, "clipboard.foreground_required", "Keep the managed runner visible to access the clipboard.")
+                return failure(request, .actionRequired, "clipboard.foreground_required", "Keep the clipboard Host visible to access the clipboard.")
             }
         } onCancel: {
             // Task.cancel() calls this synchronously on the server's executor. Only enqueue
@@ -117,12 +113,12 @@ final class RunnerClipboardHandler: IOSRunnerClipboardHandling {
                 }
                 payload = [
                     "text": .string(text),
-                    "foregroundDisposition": .string("runnerRemainsForeground"),
+                    "foregroundDisposition": .string("clipboardHostRemainsForeground"),
                 ]
             } else {
                 payload = [
                     "written": .bool(true),
-                    "foregroundDisposition": .string("runnerRemainsForeground"),
+                    "foregroundDisposition": .string("clipboardHostRemainsForeground"),
                 ]
             }
             return HelperResult(requestID: request.requestID, status: .success, completedAt: Date(), payload: payload)
@@ -136,7 +132,7 @@ final class RunnerClipboardHandler: IOSRunnerClipboardHandling {
         case .expired:
             return failure(request, .expired, "clipboard.expired", "The clipboard request expired.")
         case .actionRequired:
-            return failure(request, .actionRequired, "clipboard.unavailable", "Keep the runner visible and confirm any paste prompt on the device.")
+            return failure(request, .actionRequired, "clipboard.unavailable", "Keep the clipboard Host visible and confirm any paste prompt on the device.")
         case .failure, .invalid:
             let status: HelperResultStatus = result.status == .invalid ? .invalid : .failure
             if result.code == "clipboard.too_large" {
@@ -328,7 +324,7 @@ final class ClipboardCommands {
                     status: .actionRequired,
                     text: nil,
                     code: "clipboard.unavailable",
-                    safeMessage: "No readable text is available. Keep the runner visible and confirm any paste prompt."
+                    safeMessage: "No readable text is available. Keep the clipboard Host visible and confirm any paste prompt."
                 )
             }
             guard text.utf8.count <= Self.maximumUTF8Bytes else {
@@ -347,7 +343,7 @@ final class ClipboardCommands {
                 safeMessage: "The clipboard request expired.")
         } catch ClipboardAccessError.notForeground {
             return ClipboardCommandResult(status: .actionRequired, text: nil, code: "clipboard.foreground_required",
-                safeMessage: "Keep the managed runner visible to access the clipboard.")
+                safeMessage: "Keep the clipboard Host visible to access the clipboard.")
         } catch ClipboardAccessError.tooLarge {
             return ClipboardCommandResult(status: .failure, text: nil, code: "clipboard.too_large",
                 safeMessage: "Clipboard text exceeds 1 MiB (UTF-8). Nothing was truncated or transferred.")
@@ -398,7 +394,7 @@ final class ClipboardCommands {
                 safeMessage: "The clipboard request expired.")
         } catch ClipboardAccessError.notForeground {
             return ClipboardCommandResult(status: .actionRequired, text: nil, code: "clipboard.foreground_required",
-                safeMessage: "Keep the managed runner visible to access the clipboard.")
+                safeMessage: "Keep the clipboard Host visible to access the clipboard.")
         } catch ClipboardAccessError.unverified {
             return ClipboardCommandResult(status: .failure, text: nil, code: "clipboard.write_unverified",
                 safeMessage: "The clipboard write could not be verified.")

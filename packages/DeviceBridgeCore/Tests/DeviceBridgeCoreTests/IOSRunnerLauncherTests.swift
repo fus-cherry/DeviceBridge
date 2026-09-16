@@ -202,6 +202,131 @@ struct IOSRunnerLauncherTests {
     }
 }
 
+struct IOSClipboardHostLauncherTests {
+    @Test func installsOnlyVerifiedHostAndLaunchesItsIndependentForegroundProcess() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DeviceBridgeClipboardHostFixture-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let launch = IOSRunnerLaunch(deviceIdentifier: "synthetic-phone")
+        let products = IOSRunnerBuildProducts(launchID: launch.id, rootDirectoryURL: root,
+            expectedTeamIdentifier: "TESTTEAM00")
+        try FileManager.default.createDirectory(at: products.derivedDataDirectoryURL,
+            withIntermediateDirectories: true)
+        let process = LauncherProcess(exit: nil)
+        let processes = LauncherProcesses(process: process)
+        let commands = ClipboardHostCommands()
+        let candidate = LauncherCandidate(gate: nil, releaseOnClose: false)
+        let launcher = IOSClipboardHostLauncher(xcrunURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            channels: LauncherChannels(candidate: candidate), maximumLifetime: .seconds(60),
+            startupTimeout: .seconds(2), artifacts: LauncherArtifacts(reject: false, gate: nil),
+            processes: processes, commands: commands,
+            environment: ["PATH": "/usr/bin:/bin", "UNRELATED_SECRET": "must-not-forward"])
+
+        let connected = try await launcher.installStartAndOpen(launch: launch,
+            projectURL: URL(fileURLWithPath: "/unused/project.xcodeproj"), scheme: "Unused",
+            buildProducts: products)
+
+        let install = try #require(commands.requests.first)
+        let host = products.productsDirectoryURL.appendingPathComponent("Debug-iphoneos/DeviceBridgeClipboardHost.app")
+        #expect(install.arguments == ["devicectl", "device", "install", "app", "--device",
+            "synthetic-phone", "--quiet", host.path])
+        let request = try #require(processes.requests.first)
+        #expect(request.executableURL.path == "/usr/bin/xcrun")
+        #expect(request.arguments.prefix(7) == ["devicectl", "device", "process", "launch", "--device",
+            "synthetic-phone", "--activate"])
+        #expect(request.arguments.contains("--terminate-existing"))
+        #expect(request.arguments.contains("--console"))
+        #expect(request.arguments.last == "dev.debugutility.DeviceBridgeClipboardHost")
+        let environmentIndex = try #require(request.arguments.firstIndex(of: "--environment-variables"))
+        let publicData = Data(request.arguments[environmentIndex + 1].utf8)
+        let publicEnvironment = try #require(JSONSerialization.jsonObject(with: publicData) as? [String: String])
+        #expect(publicEnvironment["DEVICEBRIDGE_PUBLIC_LAUNCH"] == launch.id.uuidString)
+        #expect(publicEnvironment["DEVICEBRIDGE_PUBLIC_HOST_CERTIFICATE"]
+            == candidate.publicHostCertificateDER.base64EncodedString())
+        #expect(publicEnvironment["DEVICEBRIDGE_PUBLIC_MAXIMUM_LIFETIME"].flatMap(Double.init) == 60)
+        #expect(request.environment["UNRELATED_SECRET"] == nil)
+        let now = Date()
+        let clipboard = HelperRequest(requestID: UUID(), sessionNonce: "synthetic", helperDeviceID: "synthetic",
+            action: .clipboardRead, createdAt: now, expiresAt: now.addingTimeInterval(10), payload: [:])
+        await #expect(throws: (any Error).self) { try await connected.send(clipboard) }
+        let activation = try #require(commands.requests.dropFirst().first)
+        #expect(activation.arguments == ["devicectl", "device", "process", "launch", "--device",
+            "synthetic-phone", "--activate", "--quiet", "dev.debugutility.DeviceBridgeClipboardHost"])
+        #expect(activation.environment?["UNRELATED_SECRET"] == nil)
+        await launcher.stop(launch: launch)
+        #expect(await process.stops >= 1)
+        #expect(await candidate.closes >= 1)
+    }
+
+    @Test func stoppedArtifactValidationCannotInstallOrLaunchHost() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DeviceBridgeClipboardHostStopFixture-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let launch = IOSRunnerLaunch(deviceIdentifier: "synthetic-phone")
+        let products = IOSRunnerBuildProducts(launchID: launch.id, rootDirectoryURL: root,
+            expectedTeamIdentifier: "TESTTEAM00")
+        try FileManager.default.createDirectory(at: products.derivedDataDirectoryURL,
+            withIntermediateDirectories: true)
+        let gate = LauncherGate()
+        let process = LauncherProcess(exit: nil)
+        let processes = LauncherProcesses(process: process)
+        let commands = ClipboardHostCommands()
+        let launcher = IOSClipboardHostLauncher(xcrunURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            channels: LauncherChannels(candidate: LauncherCandidate(gate: nil, releaseOnClose: false)),
+            maximumLifetime: .seconds(60), startupTimeout: .seconds(2),
+            artifacts: LauncherArtifacts(reject: false, gate: gate), processes: processes,
+            commands: commands, environment: [:])
+        let start = Task {
+            try await launcher.installStartAndOpen(launch: launch,
+                projectURL: URL(fileURLWithPath: "/unused/project.xcodeproj"), scheme: "Unused",
+                buildProducts: products)
+        }
+        await gate.entered()
+        await launcher.stop(launch: launch)
+        await gate.release()
+        await #expect(throws: (any Error).self) { try await start.value }
+        #expect(commands.requests.isEmpty)
+        #expect(processes.requests.isEmpty)
+    }
+
+    @Test func failedInstallNeverLaunchesHost() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DeviceBridgeClipboardHostInstallFixture-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let launch = IOSRunnerLaunch(deviceIdentifier: "synthetic-phone")
+        let products = IOSRunnerBuildProducts(launchID: launch.id, rootDirectoryURL: root,
+            expectedTeamIdentifier: "TESTTEAM00")
+        try FileManager.default.createDirectory(at: products.derivedDataDirectoryURL,
+            withIntermediateDirectories: true)
+        let processes = LauncherProcesses(process: LauncherProcess(exit: nil))
+        let commands = ClipboardHostCommands(exitCode: 65)
+        let launcher = IOSClipboardHostLauncher(xcrunURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            channels: LauncherChannels(candidate: LauncherCandidate(gate: nil, releaseOnClose: false)),
+            maximumLifetime: .seconds(60), startupTimeout: .seconds(2),
+            artifacts: LauncherArtifacts(reject: false, gate: nil), processes: processes,
+            commands: commands, environment: [:])
+        await #expect(throws: (any Error).self) {
+            try await launcher.installStartAndOpen(launch: launch,
+                projectURL: URL(fileURLWithPath: "/unused/project.xcodeproj"), scheme: "Unused",
+                buildProducts: products)
+        }
+        #expect(commands.requests.count == 1)
+        #expect(processes.requests.isEmpty)
+    }
+}
+
+private final class ClipboardHostCommands: HostCommandRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var captured: [HostCommandRequest] = []
+    private let exitCode: Int32
+    init(exitCode: Int32 = 0) { self.exitCode = exitCode }
+    var requests: [HostCommandRequest] { lock.withLock { captured } }
+    func run(_ request: HostCommandRequest) async throws -> HostCommandResult {
+        lock.withLock { captured.append(request) }
+        return HostCommandResult(exitCode: exitCode, standardOutput: Data(), standardError: Data())
+    }
+}
+
 private struct ReplacementChannels: IOSRunnerChannelPreparing {
     let candidates: [UUID: LauncherCandidate]
     func prepare(launch: IOSRunnerLaunch) throws -> any IOSRunnerChannelCandidate {
@@ -264,6 +389,7 @@ private struct LauncherArtifacts: IOSRunnerArtifactsLoading {
         return IOSRunnerSignedArtifacts(configuration: IOSRunnerTestConfiguration(launchID: launch.id,
             runnerApplicationURL: runner, testBundleURL: runner.appendingPathComponent("PlugIns/DeviceBridgeRunnerUITests.xctest"),
             targetApplicationURL: products.productsDirectoryURL.appendingPathComponent("Debug-iphoneos/DeviceBridgeHost.app"),
+            clipboardApplicationURL: products.productsDirectoryURL.appendingPathComponent("Debug-iphoneos/DeviceBridgeClipboardHost.app"),
             configurationData: Data("synthetic-configuration".utf8)))
     }
 }

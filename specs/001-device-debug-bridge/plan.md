@@ -259,19 +259,20 @@ authorization also allowed terminating the exact app-owned native session for te
 not permit interrupting unrelated processes. Source fixtures are excluded from ordinary builds;
 see `validation/us2-clipboard.md` for physical evidence and diagnostic-build prerequisites.
 
-T036 ownership: Workspace selection revision and the exact DeviceSessionStore session bind the
-runner manager before preparation. The manager owns build/launch/cleanup; one Workspace metadata
-task renews the authenticated channel every 10 seconds independently of the selected feature pane.
+T036 ownership: Workspace selection revision and the exact DeviceSessionStore session bind two
+independent capability owners only after an explicit action. `IOSRunnerManager` owns the background
+screenshot Runner; the clipboard manager owns the separate foreground clipboard Host. Each owns its
+own build/launch/cleanup, preparation state and heartbeat task independently of the selected feature pane.
 Preparation, heartbeat and content completions recheck their captured session/revision after awaits.
 Selection, Stop and inventory route/generation invalidation synchronously remove readiness and
 cancel tasks before awaiting cleanup. Clipboard readiness requires both negotiated actions and a
-context equal to the already-authenticated owned launch; no second manager/heartbeat or content
-probe is introduced. Stop and route/heartbeat invalidation also clear clipboard content/feedback
+context equal to the authenticated clipboard-Host launch. Stop and route/heartbeat invalidation also clear clipboard content/feedback
 and invalidate pending exports. Selection clears the prior device's text synchronously. The
 selected-USB Workspace WRITE/READ and screenshot/export path passed on the physical reference
 phone (2026-09-08); visual and remaining adverse/wireless acceptance remain open.
-A failed runner affects screenshot and clipboard readiness, not photo/file
-services with separate routes. The initial native process lifetime is explicitly bounded to one hour;
+A failed screenshot Runner affects only screenshot readiness; a failed clipboard Host affects only
+clipboard readiness. Neither affects photo/file services with separate routes. Native process
+lifetimes remain bounded;
 expiry requires reselection and is not presented as an indefinitely maintained session.
 
 ## Approved module navigation (2026-09-07)

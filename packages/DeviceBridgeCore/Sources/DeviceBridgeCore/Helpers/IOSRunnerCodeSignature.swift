@@ -2,13 +2,14 @@ import Foundation
 import Security
 
 public enum IOSRunnerCodeRole: Sendable, CaseIterable {
-    case runner, tests, host
+    case runner, tests, host, clipboardHost
 
     var bundleIdentifier: String {
         switch self {
         case .runner: "dev.debugutility.DeviceBridgeRunnerUITests.xctrunner"
         case .tests: "dev.debugutility.DeviceBridgeRunnerUITests"
         case .host: "dev.debugutility.DeviceBridgeHost"
+        case .clipboardHost: "dev.debugutility.DeviceBridgeClipboardHost"
         }
     }
 }

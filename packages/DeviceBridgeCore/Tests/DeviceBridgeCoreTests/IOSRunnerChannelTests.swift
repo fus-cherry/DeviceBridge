@@ -78,9 +78,8 @@ private struct ChannelScreenshotFixture: IOSRunnerScreenshotHandling {
         }
     }
 
-    @Test func metadataRequiresNegotiationAndDoesNotActivateForeground() async throws {
-        let activation = CountingMetadataActivation()
-        let fixture = try await ChannelFixture(helperBuild: IOSRunnerSessionServer.helperBuild, foreground: activation)
+    @Test func metadataRequiresNegotiation() async throws {
+        let fixture = try await ChannelFixture(helperBuild: IOSRunnerSessionServer.helperBuild)
         let server = Task { try await IOSRunnerSessionServer.run(stream: fixture.listener.accept(), launchID: fixture.launch.id,
             maximumDeadline: .now.advanced(by: .seconds(5)), deviceInformationHandler: ChannelMetadataFixture()) }
         do {
@@ -90,7 +89,6 @@ private struct ChannelScreenshotFixture: IOSRunnerScreenshotHandling {
             var request = metadataRequest(context); request.action = .deviceInformation
             let result = try await typed.send(request)
             #expect(try DeviceRuntimeInformation(payload: result.payload ?? [:]).processorCount == 6)
-            #expect(await activation.count == 0)
             var stop = metadataRequest(context); stop.action = .stop
             _ = try await fixture.channel.send(stop)
             #expect(try await server.value == .stopped)
@@ -280,183 +278,6 @@ private struct ChannelScreenshotFixture: IOSRunnerScreenshotHandling {
         }
     }
 
-    @Test func closedChannelDiscardsAnUncooperativeActivationAfterCallerCancellation() async throws {
-        let activation = ChannelActivationGate()
-        let fixture = try await ChannelFixture(helperBuild: IOSRunnerSessionServer.helperBuild, foreground: activation)
-        let handler = ChannelImmediateClipboard()
-        let server = Task {
-            try await IOSRunnerSessionServer.run(stream: fixture.listener.accept(), launchID: fixture.launch.id,
-                maximumDeadline: .now.advanced(by: .seconds(10)), clipboardHandler: handler)
-        }
-        do {
-            _ = try await fixture.channel.open(launch: fixture.launch, process: ChannelProcess())
-            let context = try await fixture.channel.authenticatedContext()
-            var request = metadataRequest(context); request.action = .clipboardRead
-            let captured = request
-            let read = Task { try await fixture.channel.send(captured) }
-            #expect(await activation.waitUntilEntered())
-            read.cancel()
-            // Close, not Task.cancel(), is the explicit actor-owned invalidation barrier.
-            await fixture.channel.close()
-            await activation.release()
-            await #expect(throws: CancellationError.self) { try await read.value }
-            await #expect(throws: IOSRunnerChannel.Failure.unavailable) { try await fixture.channel.authenticatedContext() }
-            _ = try? await server.value
-            #expect(await handler.calls == 0)
-        } catch {
-            await activation.release(); await fixture.channel.close(); await fixture.listener.close()
-            server.cancel(); _ = try? await server.value
-            throw error
-        }
-    }
-
-    @Test func stopIsNotExpiredByAnUnsentClipboardItHasPreempted() async throws {
-        let activation = ChannelActivationGate()
-        let fixture = try await ChannelFixture(foreground: activation)
-        let server = Task { try await fixture.serveDelayedStop() }
-        do {
-            _ = try await fixture.channel.open(launch: fixture.launch, process: ChannelProcess())
-            let context = try await fixture.channel.authenticatedContext()
-            var request = metadataRequest(context); request.action = .clipboardRead
-            request.expiresAt = Date().addingTimeInterval(0.3)
-            let captured = request
-            let read = Task { try await fixture.channel.send(captured) }
-            #expect(await activation.waitUntilEntered())
-            var stop = metadataRequest(context); stop.action = .stop
-            // The peer will acknowledge after the obsolete, never-sent read's expiry.
-            #expect(try await fixture.channel.send(stop).status == .success)
-            await #expect(throws: IOSRunnerChannel.Failure.unavailable) { try await read.value }
-            await activation.release()
-            try await server.value
-        } catch {
-            await activation.release(); await fixture.channel.close(); await fixture.listener.close()
-            server.cancel(); _ = try? await server.value
-            throw error
-        }
-    }
-
-    @Test(arguments: [IOSRunnerForegroundActivator.Failure.activationFailed, .timedOut])
-    func failedUnsentClipboardActivationPreservesScreenshotAndExplicitRetry(_ failure: IOSRunnerForegroundActivator.Failure) async throws {
-        let fixture = try await ChannelFixture(helperBuild: IOSRunnerSessionServer.helperBuild,
-            foreground: ChannelFailFirstActivation(failure: failure))
-        let clipboard = ChannelImmediateClipboard()
-        let screenshot = ChannelScreenshotFixture()
-        let server = Task {
-            try await IOSRunnerSessionServer.run(stream: fixture.listener.accept(), launchID: fixture.launch.id,
-                maximumDeadline: .now.advanced(by: .seconds(10)), clipboardHandler: clipboard,
-                screenshotHandler: screenshot)
-        }
-        do {
-            _ = try await fixture.channel.open(launch: fixture.launch, process: ChannelProcess())
-            let context = try await fixture.channel.authenticatedContext()
-            var read = metadataRequest(context); read.action = .clipboardRead
-            let declined = try await fixture.channel.send(read)
-            #expect(declined.status == .actionRequired)
-            #expect(declined.error?.code == "clipboard.foreground_required")
-            #expect(await clipboard.calls == 0)
-            let original = read
-            await #expect(throws: IOSRunnerChannel.Failure.invalidRequest) {
-                try await fixture.channel.send(original)
-            }
-            #expect(try await fixture.channel.send(metadataRequest(context)).status == .success)
-            var capture = metadataRequest(context); capture.action = .screenshotCapture
-            #expect(try await fixture.channel.captureScreenshot(capture).data == screenshot.png)
-            var retry = metadataRequest(context); retry.action = .clipboardRead
-            #expect(try await fixture.channel.send(retry).payload == ["text": .string("full fixture")])
-            #expect(await clipboard.calls == 1)
-            var stop = metadataRequest(context); stop.action = .stop
-            #expect(try await fixture.channel.send(stop).status == .success)
-            #expect(try await server.value == .stopped)
-        } catch {
-            await fixture.channel.close(); await fixture.listener.close()
-            server.cancel(); _ = try? await server.value
-            throw error
-        }
-    }
-
-    @Test func failedActivationAfterRunnerExitIsStillTerminal() async throws {
-        let process = ChannelExitableProcess()
-        let fixture = try await ChannelFixture(helperBuild: IOSRunnerSessionServer.helperBuild,
-            foreground: ChannelExitDuringActivation(process: process))
-        let server = Task {
-            try await IOSRunnerSessionServer.run(stream: fixture.listener.accept(), launchID: fixture.launch.id,
-                maximumDeadline: .now.advanced(by: .seconds(5)), clipboardHandler: ChannelImmediateClipboard())
-        }
-        do {
-            _ = try await fixture.channel.open(launch: fixture.launch, process: process)
-            let context = try await fixture.channel.authenticatedContext()
-            var request = metadataRequest(context); request.action = .clipboardRead
-            let captured = request
-            await #expect(throws: IOSRunnerChannel.Failure.unavailable) { try await fixture.channel.send(captured) }
-            await #expect(throws: IOSRunnerChannel.Failure.unavailable) { try await fixture.channel.authenticatedContext() }
-            _ = try? await server.value
-        } catch {
-            await fixture.channel.close(); await fixture.listener.close()
-            server.cancel(); _ = try? await server.value
-            throw error
-        }
-    }
-
-    @Test func lateActivationFailureCannotReviveExpiredRequest() async throws {
-        let gate = ChannelActivationGate()
-        let fixture = try await ChannelFixture(helperBuild: IOSRunnerSessionServer.helperBuild,
-            foreground: ChannelFailureAfterGate(gate: gate))
-        let handler = ChannelImmediateClipboard()
-        let server = Task {
-            try await IOSRunnerSessionServer.run(stream: fixture.listener.accept(), launchID: fixture.launch.id,
-                maximumDeadline: .now.advanced(by: .seconds(5)), clipboardHandler: handler)
-        }
-        do {
-            _ = try await fixture.channel.open(launch: fixture.launch, process: ChannelProcess())
-            let context = try await fixture.channel.authenticatedContext()
-            var request = metadataRequest(context); request.action = .clipboardRead
-            request.expiresAt = Date().addingTimeInterval(0.2)
-            let captured = request
-            let read = Task { try await fixture.channel.send(captured) }
-            #expect(await gate.waitUntilEntered())
-            await #expect(throws: IOSRunnerChannel.Failure.unavailable) { try await read.value }
-            await gate.release()
-            await #expect(throws: IOSRunnerChannel.Failure.unavailable) { try await fixture.channel.authenticatedContext() }
-            #expect(await handler.calls == 0)
-            _ = try? await server.value
-        } catch {
-            await gate.release(); await fixture.channel.close(); await fixture.listener.close()
-            server.cancel(); _ = try? await server.value
-            throw error
-        }
-    }
-
-    @Test func activationMustFinishBeforeClipboardButDoesNotBlockHeartbeat() async throws {
-        let activation = ChannelActivationGate()
-        let fixture = try await ChannelFixture(helperBuild: IOSRunnerSessionServer.helperBuild, foreground: activation)
-        let handler = ChannelImmediateClipboard()
-        let server = Task {
-            try await IOSRunnerSessionServer.run(stream: fixture.listener.accept(), launchID: fixture.launch.id,
-                maximumDeadline: .now.advanced(by: .seconds(10)), clipboardHandler: handler)
-        }
-        do {
-            _ = try await fixture.channel.open(launch: fixture.launch, process: ChannelProcess())
-            let context = try await fixture.channel.authenticatedContext()
-            var request = metadataRequest(context); request.action = .clipboardRead
-            let captured = request
-            let read = Task { try await fixture.channel.send(captured) }
-            #expect(await activation.waitUntilEntered())
-            #expect(await handler.calls == 0)
-            let heartbeat = metadataRequest(context)
-            #expect(try await fixture.channel.send(heartbeat).requestID == heartbeat.requestID)
-            await activation.release()
-            let complete = try await read.value.payload == ["text": .string("full fixture")]
-            #expect(complete)
-            var stop = metadataRequest(context); stop.action = .stop
-            _ = try await fixture.channel.send(stop)
-            _ = try await server.value
-        } catch {
-            await activation.release(); await fixture.channel.close(); await fixture.listener.close()
-            server.cancel(); _ = try? await server.value
-            throw error
-        }
-    }
-
     @Test func heartbeatAndStopBypassPendingClipboardWithoutMisroutingReplies() async throws {
         let fixture = try await ChannelFixture(helperBuild: IOSRunnerSessionServer.helperBuild)
         let handler = ChannelClipboardGate()
@@ -525,7 +346,10 @@ private struct ChannelScreenshotFixture: IOSRunnerScreenshotHandling {
             var read = metadataRequest(context)
             read.action = .clipboardRead
             let result = try await fixture.channel.send(read)
-            let complete = result.requestID == read.requestID && result.payload == ["text": .string(text)]
+            let complete = result.requestID == read.requestID && result.payload == [
+                "text": .string(text),
+                "foregroundDisposition": .string("clipboardHostRemainsForeground"),
+            ]
             #expect(complete)
             var stop = metadataRequest(context); stop.action = .stop
             #expect(try await fixture.channel.send(stop).status == .success)
@@ -698,12 +522,12 @@ private struct ChannelFixture {
     let endpoint: LocalChannelEndpoint
     let channel: IOSRunnerChannel
 
-    init(helperBuild: String = "runner-fixture-v1", foreground: (any IOSRunnerForegroundActivating)? = nil) async throws {
+    init(helperBuild: String = "runner-fixture-v1") async throws {
         let host = try EphemeralTLSIdentity.create(), runner = try EphemeralTLSIdentity.create()
         listener = try await PinnedTLSFrameStream.listen(identity: runner, peerCertificateDER: host.certificateDER)
         endpoint = LocalChannelEndpoint(port: listener.port, certificate: runner.certificateDER)
         channel = IOSRunnerChannel(launch: launch, identity: host, endpoint: endpoint,
-            helperBuild: helperBuild, foreground: foreground)
+            helperBuild: helperBuild)
     }
 
     func serveClipboard(text: String) async throws {
@@ -717,7 +541,10 @@ private struct ChannelFixture {
                 && read.helperDeviceID == session.helperDeviceID
             #expect(bound)
             try await stream.writeFrame(codec.encode(HelperResult(requestID: read.requestID, status: .success,
-                completedAt: Date(), payload: ["text": .string(text)])))
+                completedAt: Date(), payload: [
+                    "text": .string(text),
+                    "foregroundDisposition": .string("clipboardHostRemainsForeground"),
+                ])))
             let stop = try codec.decodeRequest(await stream.readFrame(timeout: 2))
             #expect(stop.action == .stop)
             try await stream.writeFrame(codec.encode(HelperResult(requestID: stop.requestID, status: .success,
@@ -845,30 +672,6 @@ private actor ChannelClipboardGate: IOSRunnerClipboardHandling {
     func release() { waiter?.resume(); waiter = nil }
 }
 
-private actor ChannelImmediateClipboard: IOSRunnerClipboardHandling {
-    private(set) var calls = 0
-    func handle(_ request: HelperRequest) -> HelperResult {
-        calls += 1
-        return HelperResult(requestID: request.requestID, status: .success, completedAt: Date(),
-            payload: request.action == .clipboardRead ? ["text": .string("full fixture")] : ["written": .bool(true)])
-    }
-}
-
-private actor ChannelActivationGate: IOSRunnerForegroundActivating {
-    private var entered = false
-    private var waiter: CheckedContinuation<Void, Never>?
-    func activate(launch: IOSRunnerLaunch, deadline: ContinuousClock.Instant) async {
-        entered = true
-        await withCheckedContinuation { waiter = $0 }
-    }
-    func waitUntilEntered() async -> Bool {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
-        while !entered, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(2)) }
-        return entered
-    }
-    func release() { waiter?.resume(); waiter = nil }
-}
-
 private actor LocalChannelEndpoint: IOSRunnerEndpointOpening {
     let port: UInt16, certificate: Data
     private(set) var closeCount = 0
@@ -921,49 +724,11 @@ private actor ChannelReplyGate {
     func release() { continuation?.resume(); continuation = nil }
 }
 
-private actor ChannelFailFirstActivation: IOSRunnerForegroundActivating {
-    private let failure: IOSRunnerForegroundActivator.Failure
-    private var first = true
-    init(failure: IOSRunnerForegroundActivator.Failure) { self.failure = failure }
-    func activate(launch: IOSRunnerLaunch, deadline: ContinuousClock.Instant) throws {
-        if first {
-            first = false
-            throw failure
-        }
-    }
-}
-
-private actor ChannelExitableProcess: IOSRunnerProcessOwning {
-    private var exited = false
-    func exitStatus() -> IOSRunnerProcess.Exit? { exited ? .exited(0) : nil }
-    func stop() { exited = true }
-}
-
-private struct ChannelExitDuringActivation: IOSRunnerForegroundActivating {
-    let process: ChannelExitableProcess
-    func activate(launch: IOSRunnerLaunch, deadline: ContinuousClock.Instant) async throws {
-        await process.stop()
-        throw IOSRunnerForegroundActivator.Failure.activationFailed
-    }
-}
-
-private struct ChannelFailureAfterGate: IOSRunnerForegroundActivating {
-    let gate: ChannelActivationGate
-    func activate(launch: IOSRunnerLaunch, deadline: ContinuousClock.Instant) async throws {
-        await gate.activate(launch: launch, deadline: deadline)
-        throw IOSRunnerForegroundActivator.Failure.timedOut
-    }
-}
-
 private final class ChannelInvalidationNotice: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [UUID] = []
     var values: [UUID] { lock.withLock { storage } }
     func append(_ id: UUID) { lock.withLock { storage.append(id) } }
-}
-private actor CountingMetadataActivation: IOSRunnerForegroundActivating {
-    private(set) var count = 0
-    func activate(launch: IOSRunnerLaunch, deadline: ContinuousClock.Instant) { count += 1 }
 }
 private struct ChannelMetadataFixture: IOSRunnerDeviceInformationHandling {
     func handle(_ request: HelperRequest) async -> HelperResult {

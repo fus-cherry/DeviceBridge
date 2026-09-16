@@ -8,7 +8,7 @@ struct DeviceSelectionChecks {
         let runner = SelectionProbeRunner()
         let runnerPreparations = LockedCounter()
         let model = WorkspaceViewModel(arguments: [], runner: runner,
-            iosRunnerFactory: { _ in
+            iosScreenshotRunnerFactory: { _ in
                 runnerPreparations.increment()
                 throw IOSRunnerSourceConfigurationError.signingTeamRequired
             },
@@ -77,7 +77,7 @@ struct DeviceSelectionChecks {
         try require(model.deviceSelection == nil, "late stopped probe republished feedback")
         let recoveryRunner = SelectionProbeRunner()
         let recovering = WorkspaceViewModel(arguments: [], runner: recoveryRunner,
-            iosRunnerFactory: { _ in throw IOSRunnerSourceConfigurationError.signingTeamRequired },
+            iosScreenshotRunnerFactory: { _ in throw IOSRunnerSourceConfigurationError.signingTeamRequired },
             iosMemoryProvider: NoSelectionMemory())
         defer { recovering.stop() }
         recovering.start()

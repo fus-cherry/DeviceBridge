@@ -6,6 +6,7 @@ public struct IOSRunnerTestConfiguration: Sendable {
     public let runnerApplicationURL: URL
     public let testBundleURL: URL
     public let targetApplicationURL: URL
+    public let clipboardApplicationURL: URL
     public let configurationData: Data
 
     /// Read only the captured attempt's products directory; never select a latest global build.
@@ -59,6 +60,7 @@ public struct IOSRunnerTestConfiguration: Sendable {
         let runner = root.appendingPathComponent("Debug-iphoneos/DeviceBridgeRunnerUITests-Runner.app")
         let tests = runner.appendingPathComponent("PlugIns/DeviceBridgeRunnerUITests.xctest")
         let host = root.appendingPathComponent("Debug-iphoneos/DeviceBridgeHost.app")
+        let clipboardHost = root.appendingPathComponent("Debug-iphoneos/DeviceBridgeClipboardHost.app")
         for (key, expected) in [("TestHostPath", runner), ("TestBundlePath", tests), ("UITargetAppPath", host)] {
             guard let value = target[key] as? String, !value.contains("\0") else { throw Invalid.configuration }
             let path = value.replacingOccurrences(of: "__TESTROOT__", with: root.path)
@@ -76,7 +78,8 @@ public struct IOSRunnerTestConfiguration: Sendable {
         let encoded = try PropertyListSerialization.data(fromPropertyList: rewritten, format: .binary, options: 0)
         guard encoded.count <= 1_048_576 else { throw Invalid.configuration }
         return Self(launchID: launch.id, runnerApplicationURL: runner, testBundleURL: tests,
-            targetApplicationURL: host, configurationData: encoded)
+            targetApplicationURL: host, clipboardApplicationURL: clipboardHost,
+            configurationData: encoded)
     }
 
     private static func expandProductMacros(_ value: Any, root: String, runner: String) -> Any {

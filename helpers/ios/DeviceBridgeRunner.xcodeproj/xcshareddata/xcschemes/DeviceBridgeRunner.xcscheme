@@ -5,6 +5,9 @@
          <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
             <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="111111111111111111111111" BuildableName="DeviceBridgeHost.app" BlueprintName="DeviceBridgeHost" ReferencedContainer="container:DeviceBridgeRunner.xcodeproj"/>
          </BuildActionEntry>
+         <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="666600000000000000000001" BuildableName="DeviceBridgeClipboardHost.app" BlueprintName="DeviceBridgeClipboardHost" ReferencedContainer="container:DeviceBridgeRunner.xcodeproj"/>
+         </BuildActionEntry>
          <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">
             <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="222222222222222222222222" BuildableName="DeviceBridgeRunnerUITests.xctest" BlueprintName="DeviceBridgeRunnerUITests" ReferencedContainer="container:DeviceBridgeRunner.xcodeproj"/>
          </BuildActionEntry>

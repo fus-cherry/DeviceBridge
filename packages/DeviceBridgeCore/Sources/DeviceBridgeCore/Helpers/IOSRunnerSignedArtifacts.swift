@@ -13,6 +13,8 @@ public struct IOSRunnerSignedArtifacts: Sendable {
             (.runner, configuration.runnerApplicationURL, "Debug-iphoneos/DeviceBridgeRunnerUITests-Runner.app"),
             (.tests, configuration.testBundleURL, "Debug-iphoneos/DeviceBridgeRunnerUITests-Runner.app/PlugIns/DeviceBridgeRunnerUITests.xctest"),
             (.host, configuration.targetApplicationURL, "Debug-iphoneos/DeviceBridgeHost.app"),
+            (.clipboardHost, configuration.clipboardApplicationURL,
+                "Debug-iphoneos/DeviceBridgeClipboardHost.app"),
         ]
         for (role, url, relativePath) in roles {
             let resolved = url.resolvingSymlinksInPath().standardizedFileURL

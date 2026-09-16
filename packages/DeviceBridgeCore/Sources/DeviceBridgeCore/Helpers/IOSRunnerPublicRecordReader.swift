@@ -12,12 +12,15 @@ public struct IOSRunnerPublicRecordReader: IOSRunnerPublicRecordReading {
     private let xcrunURL: URL
     private let commands: any HostCommandRunning
     private let copyTimeout: Duration
+    private let containerBundleIdentifier: String
 
     public init(xcrunURL: URL, commands: any HostCommandRunning = IOSRunnerPublicCopyProcessRunner(),
-                copyTimeout: Duration = .seconds(8)) {
+                copyTimeout: Duration = .seconds(8),
+                containerBundleIdentifier: String = "dev.debugutility.DeviceBridgeRunnerUITests.xctrunner") {
         self.xcrunURL = xcrunURL
         self.commands = commands
         self.copyTimeout = copyTimeout
+        self.containerBundleIdentifier = containerBundleIdentifier
     }
 
     public func read(launch: IOSRunnerLaunch) async throws -> Data {
@@ -30,7 +33,7 @@ public struct IOSRunnerPublicRecordReader: IOSRunnerPublicRecordReading {
         do {
             let result = try await commands.run(HostCommandRequest(executableURL: xcrunURL,
                 arguments: ["devicectl", "device", "copy", "from", "--device", launch.deviceIdentifier,
-                    "--domain-type", "appDataContainer", "--domain-identifier", IOSRunnerCodeRole.runner.bundleIdentifier,
+                    "--domain-type", "appDataContainer", "--domain-identifier", containerBundleIdentifier,
                     "--source", "Documents/DeviceBridgeBootstrap/\(launch.id.uuidString).json",
                     "--destination", destination.path, "--timeout", "5"],
                 timeout: copyTimeout, maximumOutputBytes: 0))

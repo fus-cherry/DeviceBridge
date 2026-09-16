@@ -145,7 +145,7 @@ struct IOSMemoryAdmissionChecks {
         let inventory = WorkspaceVMInventory()
         let runner = PausedVMRunnerManager()
         let model = WorkspaceViewModel(arguments: [], runner: inventory,
-            iosRunnerFactory: { _ in runner }, iosMemoryProvider: provider)
+            iosScreenshotRunnerFactory: { _ in runner }, iosMemoryProvider: provider)
         defer { model.stop() }
         model.start()
         try await wait { !model.isRefreshing && model.devices.count == 1 }
