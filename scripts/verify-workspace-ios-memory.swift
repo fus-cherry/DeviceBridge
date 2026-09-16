@@ -19,7 +19,7 @@ struct IOSMemoryAdmissionChecks {
         try await wait { !model.isRefreshing }
         let phone = model.devices.first { $0.identity.platform == .iOS }!
         model.select(phone.identity)
-        try await wait { !model.isSelecting && model.contentActionsAllowed }
+        try await wait { !model.isSelecting && model.canDiscoverMemory }
         model.vmServiceURIText = "http://127.0.0.1:54321/synthetic-unverified=/"
         model.startFlutterMemoryMonitoring()
         // Check synchronously before a scheduled monitor can perform network I/O.
@@ -37,7 +37,7 @@ struct IOSMemoryAdmissionChecks {
         }
         let android = model.devices.first { $0.identity.platform == .android }!
         model.select(android.identity)
-        try await wait { !model.isSelecting && model.contentActionsAllowed }
+        try await wait { !model.isSelecting && model.canAttachFlutterVM }
         guard model.canAttachFlutterVM else {
             print("FAIL: iOS admission gate disabled existing Android attach")
             exit(1)
@@ -106,7 +106,7 @@ struct IOSMemoryAdmissionChecks {
             await provider.gate.release()
             try await waitAsync { await provider.bindingFinished }
             try await waitAsync { await provider.allClosed }
-            if switchDevice { try await wait { !model.isSelecting && model.contentActionsAllowed } }
+            if switchDevice { try await wait { !model.isSelecting && model.canAttachFlutterVM } }
             try require(!model.canStartIOSMemory && !model.isMonitoringMemory && model.memorySamples.isEmpty, "late discovery revived invalidated iOS state")
             try require(await provider.allClosed, "late binding retained its owner")
             model.stop()
@@ -150,20 +150,24 @@ struct IOSMemoryAdmissionChecks {
         model.start()
         try await wait { !model.isRefreshing && model.devices.count == 1 }
         model.select(model.devices[0].identity)
-        try await waitAsync { await runner.gate.isHeld }
-        try await wait { model.targetApplications.count == 2 }
+        try await wait { !model.isSelecting && model.targetApplications.count == 2 }
+        try require(await !runner.gate.isHeld, "device selection prepared the screenshot runner")
         model.selectedMemoryApplicationID = "dev.example.one"
         try await wait { model.memoryReadiness == .ready }
         let admittedWithoutRunner = model.canStartIOSMemory
+        model.requestScreenshotCapture()
+        try await waitAsync { await runner.gate.isHeld }
+        let admittedDuringRunnerPreparation = model.canStartIOSMemory
         await runner.gate.release()
-        try await wait { !model.isSelecting }
+        try await wait { !model.isCapturingScreenshot }
         try require(admittedWithoutRunner, "unrelated screenshot preparation blocked verified memory")
+        try require(admittedDuringRunnerPreparation, "explicit screenshot preparation blocked verified memory")
         await inventory.changeRoute()
         model.requestRefresh()
         try await wait { !model.isRefreshing }
         try require(!model.canStartIOSMemory && !model.isMonitoringMemory, "changed route retained VM readiness")
         try await waitAsync { await provider.allClosed }
-        print("PASS: screenshot preparation is independent; observed route replacement invalidates VM")
+        print("PASS: selection does not prepare the runner; explicit screenshot preparation is independent; observed route replacement invalidates VM")
     }
 
     static func require(_ condition: Bool, _ message: String) throws {

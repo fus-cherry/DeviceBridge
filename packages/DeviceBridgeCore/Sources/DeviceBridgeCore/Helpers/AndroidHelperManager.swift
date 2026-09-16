@@ -24,6 +24,8 @@ public actor AndroidHelperManager {
     public static let packageName = "dev.debugutility.helper"
     public static let componentName = "dev.debugutility.helper/.MainActivity"
     public static let socketName = "device_bridge_helper"
+    public static let requestKeepAlivePermissionAction =
+        "dev.debugutility.helper.action.REQUEST_KEEPALIVE_PERMISSION"
 
     private let adbURL: URL
     private let apkURL: URL
@@ -131,6 +133,18 @@ public actor AndroidHelperManager {
         activeConnection = connection
         if Task.isCancelled { await detach(); return connectionFailure() }
         return AndroidHelperPreparationOutcome(connection: connection)
+    }
+
+    /// This may foreground the helper and is only called from the user's explicit Wi-Fi
+    /// maintenance action. Ordinary connection and clipboard preparation never request it.
+    public func requestKeepAliveNotificationPermission(transportID: String) async -> Bool {
+        guard let result = await run(arguments: [
+            "-t", transportID,
+            "shell", "am", "start",
+            "-a", Self.requestKeepAlivePermissionAction,
+            "-n", Self.componentName,
+        ]) else { return false }
+        return result.exitCode == 0
     }
 
     private func detectVersion(transportID: String) async -> Int? {

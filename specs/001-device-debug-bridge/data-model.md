@@ -1,5 +1,23 @@
 # Data Model: Device Debug Bridge
 
+## Session capability correction — 2026-09-16
+
+Discovery data and active-session capability state are distinct. `DeviceRecord` describes observed
+identity, authorization, and transports; it is not the mutable owner of prepared helpers or action
+availability. The active `WorkspaceSnapshot` carries capability snapshots scoped to its exact
+`ConnectionSession.generation`.
+
+Each capability snapshot contains one availability, validation level, probe/operation phase, safe
+reason, optional named recovery action, and checked time. One projection produces the status label,
+primary-action enabled state and disabled reason. `availableOnDemand` means an explicit action may
+prepare a helper; it does not mean a provider/channel already exists. Runtime helper/runner handles
+remain private to their named capability controller and cannot themselves authorize UI actions.
+
+Connection commit clears obsolete capability snapshots. A probe or preparation result is a candidate
+until the session store accepts it for the captured device/transport/generation. Operation completion
+atomically consumes the operation token and returns publication eligibility. A separate
+`canPublish`/`finishOperation` pair is not a terminal commit.
+
 ## Release closure evidence (2026-09-08)
 
 No new mutable business-state owner is introduced. A validation observation records build, scenario,

@@ -1,5 +1,35 @@
 # Implementation Plan: Device Debug Bridge
 
+## Capability lifecycle redesign — 2026-09-16
+
+This correction supersedes selection-time helper preparation below. Preserve `DeviceSessionStore`,
+session tokens, provider integrity checks, secure framing, and capability-specific services. Replace
+the monolithic selection orchestration with three explicit production phases:
+
+1. **Connection**: probe and commit one command-ready `ConnectionSession`, publish the header and
+   start health maintenance. No helper/runner/permission/foreground work is allowed.
+2. **Capability**: publish a session-generation-bound capability snapshot using metadata-only host
+   evidence. A state may be available-on-demand without owning a prepared provider.
+3. **Operation**: an explicit user/Agent request obtains session admission, performs any named
+   helper preparation or foreground transaction, executes once, atomically consumes publication
+   eligibility, and publishes one terminal result.
+
+`DeviceSessionStore` remains the authoritative device/session/operation writer. Named capability
+controllers own only their opaque runtime resources; they submit candidate states for the exact
+captured session. `WorkspaceViewModel` becomes a presentation adapter and cannot independently
+invent readiness booleans. Status text and button availability are projections of the same immutable
+capability/action snapshot.
+
+The first independently reviewable slice removes helper and runner work from selection, makes
+clipboard/screenshot preparation explicit and on-demand, repairs atomic clipboard completion, and
+restores headless verification on current SwiftPM. Each later slice deletes the state/branch it
+replaces; no permanent compatibility facade or second capability state store is allowed.
+
+Structural budget for the complete redesign: delete the four feature-specific readiness enums and
+the global `contentActionsAllowed` cross-product; remove helper managers/services from the selection
+path; same-device selection becomes a no-op; foreground behavior is confined to a named clipboard
+operation. Existing provider/session/integrity tests remain in place.
+
 ## Startup follow-up — Build 9, 2026-09-09
 
 The implemented selection feedback and success-only transfer of persistent compiler workspaces

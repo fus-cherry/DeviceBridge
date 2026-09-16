@@ -1,5 +1,10 @@
 package dev.debugutility.helper
 
+internal sealed interface ClipboardReadValue {
+    data object Unavailable : ClipboardReadValue
+    data class Text(val value: String) : ClipboardReadValue
+}
+
 /** Complete current plain text only; never opens clipboard URI providers or retains history. */
 internal object ClipboardText {
     const val MAX_UTF8_BYTES = 1_048_576
@@ -11,7 +16,7 @@ internal object ClipboardText {
         return text.toString().toByteArray(Charsets.UTF_8).size <= remainingBytes
     }
 
-    fun join(items: Sequence<CharSequence?>): String {
+    fun read(items: Sequence<CharSequence?>): ClipboardReadValue {
         val result = StringBuilder()
         var usedBytes = 0
         var hasText = false
@@ -26,6 +31,13 @@ internal object ClipboardText {
             usedBytes += separatorBytes + text.toByteArray(Charsets.UTF_8).size
             hasText = true
         }
-        return result.toString()
+        return if (hasText) ClipboardReadValue.Text(result.toString()) else ClipboardReadValue.Unavailable
+    }
+
+    fun join(items: Sequence<CharSequence?>): String {
+        return when (val value = read(items)) {
+            ClipboardReadValue.Unavailable -> ""
+            is ClipboardReadValue.Text -> value.value
+        }
     }
 }

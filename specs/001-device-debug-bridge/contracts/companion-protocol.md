@@ -1,5 +1,19 @@
 # Managed Helper Protocol Contract
 
+## Capability lifecycle correction — 2026-09-16
+
+Installing, starting, foregrounding and authenticating a helper are operation preparation, not device
+connection. Automatic selection/readiness work may inspect host/tool/package metadata but cannot
+start the Android Activity or iOS runner. Clipboard success requires an explicit text item (including
+an explicitly represented empty item) or a verified write receipt; inaccessible/null/redacted data
+is `actionRequired`/`permissionDenied`, never an empty success. Android notification permission is
+outside clipboard bootstrap and belongs only to explicit keep-alive start.
+Successful iOS clipboard results include
+`foregroundDisposition: "runnerRemainsForeground"`; the host surfaces that truthful terminal state
+and never claims to restore the prior application when the platform exposes no verified restoration
+mechanism. Android results omit the field because its foreground behavior is already explicit in
+helper preparation.
+
 ## Scope
 
 Version 1 supports only:

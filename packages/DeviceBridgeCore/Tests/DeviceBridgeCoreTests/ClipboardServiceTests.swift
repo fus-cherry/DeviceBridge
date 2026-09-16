@@ -16,7 +16,10 @@ struct ClipboardServiceTests {
                 requestID: request.requestID,
                 status: .success,
                 completedAt: Date(timeIntervalSince1970: 10),
-                payload: ["written": .bool(true)]
+                payload: [
+                    "written": .bool(true),
+                    "foregroundDisposition": .string("runnerRemainsForeground"),
+                ]
             )
         }
         let service = ClipboardService(
@@ -31,6 +34,7 @@ struct ClipboardServiceTests {
 
         #expect(outcome == .written(at: Date(timeIntervalSince1970: 10)))
         #expect(request?.payload["text"]?.stringValue == "你好 👋🏽 مرحبا")
+        #expect(await service.lastForegroundDisposition == .runnerRemainsForeground)
     }
 
     @Test("read publishes a generation-bound snapshot")

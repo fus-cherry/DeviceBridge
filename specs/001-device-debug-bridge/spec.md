@@ -1,5 +1,46 @@
 # Feature Specification: Device Debug Bridge
 
+## Capability lifecycle correction — 2026-09-16
+
+The connection, capability preparation, and explicit content-operation lifecycles are separate.
+Selecting or recovering a device MUST NOT launch or foreground a mobile helper, build/start an iOS
+runner, request clipboard or notification permission, or otherwise replace the application currently
+being debugged. A selected command-ready session becomes usable for independent capabilities without
+waiting for clipboard or screenshot preparation.
+
+- **FR-A01**: Device selection and connection recovery MUST have zero mobile foreground side effects.
+  Metadata-only host checks may classify a capability, but helper installation/start and runner
+  preparation begin only from an explicit capability action.
+- **FR-A02**: Each capability MUST publish one session-generation-bound state that determines its
+  visible status, primary-action availability, disabled reason, and recovery action. The interface
+  MUST NOT display Ready when the corresponding primary action is disabled for an unshown reason.
+- **FR-A03**: A capability-local preparation, permission failure, or busy state MUST NOT block device
+  information, Android Shell, files, images, memory, or another independently usable capability.
+- **FR-A04**: Clipboard read/write MAY perform an explicitly initiated foreground transaction when
+  required by the platform. The application MUST explain that effect before or during the action,
+  MUST NOT automatically approve permission prompts, and MUST NOT return the phone to Home as a
+  substitute for restoring the prior application.
+- **FR-A05**: A null, redacted, unreadable, or permission-blocked clipboard result MUST be distinct
+  from a successfully read explicit empty text item. An unverified write MUST NOT be reported as a
+  successful write.
+- **FR-A06**: Operation completion eligibility and removal from the active-operation set MUST occur
+  in one authoritative session-store turn before UI publication.
+- **FR-A07**: Re-selecting the already active device on its current healthy transport MUST be a no-op;
+  capability recovery MUST restart only that capability and MUST NOT recreate the device session.
+- **FR-A08**: Android notification permission MUST be requested only by an explicit Wi-Fi keep-alive
+  action, never by USB connection or clipboard preparation.
+
+- **SC-A01**: Selecting each supported Android/iOS fixture issues zero `am start`, zero
+  `devicectl ... --activate`, zero runner prepare, and zero permission request while still committing
+  a command-ready session.
+- **SC-A02**: For every capability presentation fixture, status text, action enabled state, disabled
+  reason, and recovery action are derived from one snapshot; Ready-plus-disabled-without-reason has
+  zero reachable cases.
+- **SC-A03**: One hundred injected selection/disconnect/cancellation schedules publish zero stale
+  clipboard results across the final operation commit boundary.
+- **SC-A04**: Physical Android/iOS clipboard qualification distinguishes explicit empty, unavailable,
+  denied, foreground-required, verified write, and unverified write without simulated success.
+
 ## Build 6 remaining-work closure (2026-09-08)
 
 The user requested SpecKit planning and implementation of the audited remaining work. Existing

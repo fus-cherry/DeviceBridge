@@ -23,6 +23,13 @@ class ClipboardTextTest {
     }
 
     @Test
+    fun `missing or unreadable clipboard differs from an explicit empty text item`() {
+        assertEquals(ClipboardReadValue.Unavailable, ClipboardText.read(sequenceOf()))
+        assertEquals(ClipboardReadValue.Unavailable, ClipboardText.read(sequenceOf(null)))
+        assertEquals(ClipboardReadValue.Text(""), ClipboardText.read(sequenceOf("")))
+    }
+
+    @Test
     fun `text beyond the old character limit remains complete`() {
         val text = "你\n".repeat(200_000) + "END"
         assertEquals(text, ClipboardText.join(sequenceOf(text)))

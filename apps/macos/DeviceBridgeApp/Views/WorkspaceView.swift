@@ -55,7 +55,7 @@ struct IOSPreparationView: View {
                         SettingsLink { Text(language.text("Signing settings…")) }
                             .accessibilityIdentifier("ios-preparation-settings")
                         Spacer()
-                        Button(language.text("Reconnect device"), action: reconnect)
+                        Button(language.text("Retry iOS tools"), action: reconnect)
                             .disabled(!canReconnect).accessibilityIdentifier("ios-preparation-retry")
                     }
                 }
@@ -104,7 +104,7 @@ struct IOSPreparationView: View {
         switch preparation.state {
         case .preparing: "Clipboard and screenshots share this connection and wait for the same preparation."
         case let .failed(_, message, _): message
-        case .stopped: "Reconnect the device to prepare clipboard and screenshots again."
+        case .stopped: "Retry iOS tools without reconnecting the device session."
         case .ready: "Ready"
         }
     }
@@ -398,11 +398,11 @@ struct WorkspaceView: View {
                 VStack(spacing: 0) {
                     if device.identity.platform == .android {
                         RetainedModulePane(isSelected: selectedModule == .shell) {
-                            AndroidShellView(model: model.androidShell, actionsAllowed: model.contentActionsAllowed)
+                            AndroidShellView(model: model.androidShell, actionsAllowed: model.canUseAndroidShell)
                         }
                     }
                     RetainedModulePane(isSelected: selectedModule == .information) {
-                        DeviceInformationView(model: model.deviceInformation, actionsAllowed: model.contentActionsAllowed)
+                        DeviceInformationView(model: model.deviceInformation, actionsAllowed: model.canUseDeviceInformation)
                     }
                     RetainedModulePane(isSelected: selectedModule == .clipboard) { ClipboardView(model: model) }
                     RetainedModulePane(isSelected: selectedModule == .screenshot) { ScreenshotView(model: model) }

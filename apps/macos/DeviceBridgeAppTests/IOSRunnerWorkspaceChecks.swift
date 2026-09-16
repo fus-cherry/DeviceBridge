@@ -21,13 +21,14 @@ struct IOSRunnerWorkspaceChecks {
         model.clipboardText = "Previous device text must not survive a new selection"
         model.select(model.devices[0].identity)
         try require(model.clipboardText.isEmpty, "selection must synchronously clear the previous device clipboard text")
-        try await wait { !model.isSelecting && model.isScreenshotReady }
+        try await wait { !model.isSelecting }
+        try require(await manager.device == nil, "selection must not prepare or foreground the iOS runner")
+        try require(await channel.contentRequests == 0, "selection must not read phone content")
+        model.requestScreenshotCapture()
+        try await wait { !model.isCapturingScreenshot && model.currentScreenshotArtifact != nil }
         try require(model.isScreenshotReady, "qualified screenshot must be usable independently of clipboard")
         try require(!model.isClipboardReady, "unqualified clipboard must remain unavailable")
         try require(await manager.device == "workspace-test-udid", "launch must use stable UDID, not CoreDevice route ID")
-        try require(await channel.contentRequests == 0, "selection must not read phone content")
-        model.requestScreenshotCapture()
-        try await wait { !model.isCapturingScreenshot }
         let artifact = try model.currentScreenshotArtifact.unwrap("explicit capture did not publish an artifact")
         try require(try Data(contentsOf: artifact.sessionURL) == WorkspacePhoneChannel.png,
             "preview must retain the exact screenshot bytes")
@@ -53,7 +54,9 @@ struct IOSRunnerWorkspaceChecks {
         routeModel.start()
         try await wait { !routeModel.isRefreshing && routeModel.devices.count == 1 }
         routeModel.select(routeModel.devices[0].identity)
-        try await wait { !routeModel.isSelecting && routeModel.isScreenshotReady }
+        try await wait { !routeModel.isSelecting }
+        routeModel.reconnectIOSRunner()
+        try await wait { routeModel.isScreenshotReady && routeModel.clipboardReadiness == .ready }
         try require(routeModel.isClipboardReady, "route check must start with a qualified clipboard")
         await routeInventory.changeRoute()
         routeModel.requestRefresh()
@@ -69,7 +72,9 @@ struct IOSRunnerWorkspaceChecks {
         failedModel.start()
         try await wait { !failedModel.isRefreshing && failedModel.devices.count == 1 }
         failedModel.select(failedModel.devices[0].identity)
-        try await wait { !failedModel.isSelecting && failedModel.isScreenshotReady }
+        try await wait { !failedModel.isSelecting }
+        failedModel.reconnectIOSRunner()
+        try await wait { failedModel.isScreenshotReady && failedModel.clipboardReadiness == .ready }
         await failedChannel.failNextClipboard(.permissionDenied)
         failedModel.requestClipboardRead()
         try await wait { !failedModel.isClipboardBusy }
@@ -93,7 +98,10 @@ struct IOSRunnerWorkspaceChecks {
         model.start()
         try await wait { !model.isRefreshing && model.devices.count == 1 }
         model.select(model.devices[0].identity)
-        try await wait { model.isScreenshotReady && model.deviceInformation.canRead }
+        try await wait { !model.isSelecting }
+        try require(await manager.device == nil, "selection must keep the runner dormant")
+        model.reconnectIOSRunner()
+        try await wait { model.screenshotReadiness == .ready && model.deviceInformation.canRead }
         try require(model.deviceInformation.report == nil, "selection must not automatically collect parameters")
         model.deviceInformation.read()
         try await wait { !model.deviceInformation.isBusy }
@@ -125,6 +133,10 @@ struct IOSRunnerWorkspaceChecks {
         model.start()
         try await wait { !model.isRefreshing && model.devices.count == 1 }
         model.select(model.devices[0].identity)
+        try await wait { !model.isSelecting }
+        try require(!model.isCapturingScreenshot && model.screenshotReadiness != .preparing,
+            "selection must publish on-demand availability without beginning preparation")
+        model.requestScreenshotCapture()
         try await wait { await manager.entered }
         try require(model.screenshotReadinessText == "Preparing…", "normal iOS preparation must not be shown as Action required")
         try require(model.clipboardReadinessText == "Preparing…", "shared clipboard preparation must agree with screenshot")
@@ -151,6 +163,8 @@ struct IOSRunnerWorkspaceChecks {
         success.start()
         try await wait { !success.isRefreshing && success.devices.count == 1 }
         success.select(success.devices[0].identity)
+        try await wait { !success.isSelecting }
+        success.requestScreenshotCapture()
         try await wait { await next.entered }
         await next.setPreparationState(.connected)
         try await Task.sleep(for: .milliseconds(300))
@@ -171,7 +185,9 @@ struct IOSRunnerWorkspaceChecks {
         model.start()
         try await wait { !model.isRefreshing && model.devices.count == 1 }
         model.select(model.devices[0].identity)
-        try await wait { model.isScreenshotReady && model.isClipboardReady }
+        try await wait { !model.isSelecting }
+        model.reconnectIOSRunner()
+        try await wait { model.screenshotReadiness == .ready && model.clipboardReadiness == .ready }
         await channel.holdRead()
         model.requestClipboardRead()
         try await wait { await channel.hasPendingRead }
@@ -224,8 +240,10 @@ struct IOSRunnerWorkspaceChecks {
             try await wait { !model.isRefreshing && model.devices.count == 1 }
             model.select(model.devices[0].identity)
             try await wait { !model.isSelecting }
+            model.requestScreenshotCapture()
+            try await wait { !model.isCapturingScreenshot }
             let expected = failure == .signingTeamRequired
-                ? "Set your existing Apple development Team ID in Settings, then select the iPhone again."
+                ? "Set your existing Apple development Team ID in Settings, then retry iOS tools."
                 : "The bundled iOS runner sources are missing or invalid. Rebuild the Debug app and retry."
             try require(model.screenshotReadiness == .actionRequired(expected)
                 && model.clipboardReadiness == .actionRequired(expected),
@@ -249,7 +267,11 @@ struct IOSRunnerWorkspaceChecks {
         model.start()
         try await wait { !model.isRefreshing && model.devices.count == 1 }
         model.select(model.devices[0].identity)
-        try await wait { model.isScreenshotReady }
+        try await wait { !model.isSelecting }
+        try require(await manager.device == nil, "selection must not prepare the runner")
+        try require(await channel.contentRequests == 0, "selection must not access clipboard content")
+        model.reconnectIOSRunner()
+        try await wait { model.screenshotReadiness == .ready }
         try require(model.isClipboardReady, "negotiated clipboard must be enabled on the selected authenticated USB session")
         try require(await channel.contentRequests == 0, "preparation must not access clipboard content")
         for (status, expectedRecovery) in [
@@ -282,9 +304,15 @@ struct IOSRunnerWorkspaceChecks {
         model.requestClipboardRead()
         try await wait { !model.isClipboardBusy }
         try require(model.clipboardRecoveryAction != nil, "failure must establish advice before selection invalidation")
+        let sameSessionGeneration = model.clipboardExportGeneration
         model.select(model.devices[0].identity)
-        try require(model.clipboardRecoveryAction == nil, "selection must immediately clear stale recovery advice")
-        try await wait { model.isClipboardReady }
+        try require(!model.isSelecting && model.clipboardExportGeneration == sameSessionGeneration,
+            "healthy same-device selection must not recreate the session")
+        try require(model.clipboardRecoveryAction != nil,
+            "same-device no-op must not pretend that capability recovery occurred")
+        model.requestClipboardRead()
+        try await wait { !model.isClipboardBusy }
+        try require(model.clipboardRecoveryAction == nil, "explicit retry must clear stale recovery advice")
         await channel.holdRead()
         model.requestClipboardRead()
         try await wait { await channel.hasPendingRead }

@@ -7,6 +7,35 @@
 **Tests**: Required by the constitution. Every test task precedes its production task and must be
 observed failing for the intended missing behavior.
 
+## Capability lifecycle redesign — 2026-09-16
+
+- [X] T129 Record FR-A01–FR-A08, SC-A01–SC-A04, the three-phase production path, ownership boundaries,
+  structural budget and migration gates in `spec.md`, `plan.md`, `data-model.md`, `contracts/ui-state.md`,
+  `contracts/companion-protocol.md`, `quickstart.md` and `validation/capability-lifecycle-20260916.md`.
+- [X] T130 Add a failing current-SwiftPM product-directory fixture to
+  `scripts/test_compile_core_check.py`, then update `scripts/compile-core-check.py` to use the complete
+  product/module directory without stale SDK metadata; pass the Python test and device-selection check.
+- [X] T131 [US1] Add headless selection/action regressions proving Android/iOS selection performs no
+  helper/runner foreground work, same-device selection is a no-op, and the first explicit clipboard or
+  screenshot action alone may begin preparation.
+- [X] T132 [US1] Replace the four readiness enums and split status/button booleans with one session-bound
+  capability/action presentation model; remove the global readiness cross-product from clipboard,
+  screenshot, file, memory, information and Shell UI admission.
+- [X] T133 [US1/US2/US3] Remove `prepareClipboard`/`prepareIOSRunner` from selection, implement named
+  on-demand Android clipboard and iOS runner preparation, and move runner reconnect to capability-local
+  recovery without recreating the device session.
+- [X] T134 [US2] Make clipboard completion atomic, distinguish explicit empty from unavailable Android
+  results, verify writes where supported, and request Android notification permission only when the user
+  starts Wi-Fi keep-alive.
+- [X] T135 [US2] Replace iOS `restoreHome()` with an explicit foreground-transaction result; add no-prompt,
+  cancellation, Stop, stale-session and prior-app-restoration feasibility tests without promising
+  restoration before physical proof.
+- [X] T136 Update bilingual UI/Agent/protocol copy and remove superseded selection-time readiness paths
+  and tests in the same slices; do not retain dual state sources.
+- [X] T137 Run serial Core, Android helper, headless workspace, Xcode build/analyze and applicable
+  packaging checks; record physical foreground/empty/denial/write-restoration cases separately and keep
+  unavailable external cases open.
+
 **Current user priority (2026-09-08)**: Execute the Build 6 remaining-work closure via T115–T128
 below. Computer Use now works for the verified DeviceBridge layout; earlier native-pipe blockers are
 historical. Mac input remains Computer Use only. VM stability/T064 remains explicitly deferred; do

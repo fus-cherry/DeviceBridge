@@ -17,9 +17,11 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             text = "Device Bridge Helper\nManaged by the Mac application\n\nWi-Fi maintenance is visible in a notification and may use additional battery."
         })
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-            && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
+        if (NotificationPermissionPolicy.shouldRequest(
+                action = intent?.action,
+                requiresRuntimePermission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU,
+                granted = checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            )) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
         }
         clipboardBridge = ClipboardBridge(this).also { it.start() }

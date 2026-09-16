@@ -22,7 +22,7 @@ struct FileTransferView: View {
                 GroupBox {
                     if let browser = model.imageBrowser {
                         PhoneImagesView(model: browser, deviceName: model.selectedDevice?.name ?? "",
-                                        canAct: model.contentActionsAllowed, isActive: isActive)
+                                        canAct: model.canUseImageBrowser, isActive: isActive)
                     } else {
                         Text(language.text(model.selectedDevice?.identity.platform == .iOS
                             ? "iPhone photos require an authorized USB connection. Connect its cable, select the iPhone and retry."
@@ -161,7 +161,8 @@ struct FileTransferView: View {
     private var readinessColor: Color {
         switch model.fileTransferReadiness {
         case .ready: .green
-        case .idle: .secondary
+        case .idle, .availableOnDemand: .secondary
+        case .preparing: .blue
         case .actionRequired: .orange
         }
     }
