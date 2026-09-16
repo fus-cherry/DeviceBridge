@@ -264,7 +264,7 @@ struct FakeADBConfiguration: Sendable {
     var shellFrames: [Data] = [shellFrame(id: 3, payload: Data([0]))]
     var keepShellOpen = false
     var disconnectAfterTport = false
-    var disconnectAfterShellFrames = false
+    var finishAfterShellFrames = false
     var fragmentResponses = true
 }
 
@@ -406,7 +406,10 @@ final class FakeADBServer: @unchecked Sendable {
     private func serveShell(on connection: NWConnection) async throws {
         try await send(Data("OKAY".utf8), over: connection)
         for frame in configuration.shellFrames { try await send(frame, over: connection) }
-        if configuration.disconnectAfterShellFrames { connection.cancel(); return }
+        if configuration.finishAfterShellFrames {
+            try await finishSending(on: connection)
+            return
+        }
         if let close = try? await receiveExactly(5, from: connection) {
             lock.withLock { recordedCloseStdin.append(close) }
         }
@@ -432,6 +435,16 @@ final class FakeADBServer: @unchecked Sendable {
                     else { continuation.resume() }
                 })
             }
+        }
+    }
+
+    private func finishSending(on connection: NWConnection) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            connection.send(content: nil, contentContext: .finalMessage, isComplete: true,
+                completion: .contentProcessed { error in
+                    if let error { continuation.resume(throwing: error) }
+                    else { continuation.resume() }
+                })
         }
     }
 

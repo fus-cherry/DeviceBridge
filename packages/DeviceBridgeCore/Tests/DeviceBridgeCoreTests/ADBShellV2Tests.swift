@@ -130,11 +130,11 @@ struct ADBShellV2Tests {
         }
     }
 
-    @Test("an immediate exit frame wins if the peer closes during CloseStdin")
+    @Test("an immediate exit frame wins if peer EOF races with CloseStdin")
     func immediateExitWinsCloseStdinRace() async throws {
         let fake = try FakeADBServer(configuration: .init(
             shellFrames: [shellFrame(id: 3, payload: Data([255]))],
-            disconnectAfterShellFrames: true
+            finishAfterShellFrames: true
         ))
         try await fake.start()
         defer { fake.stop() }

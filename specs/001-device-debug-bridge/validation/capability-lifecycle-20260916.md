@@ -86,8 +86,16 @@ parallel, so the qualification command now fixes both test and build concurrency
 `--no-parallel -j 1`. A later serial CI run exposed a separate wall-clock assumption in the unmatched USB half-close
 fixture: its client slept for 150 ms and could close before a delayed 40 ms timer ran. The production
 timeout contract was retained. The fixture now uses an explicit handshake to hold the client write side
-open until the proxy reports `.failed(.timeout)`; the targeted test and the full 510-test serial gate
-both pass. No production relay semantics were relaxed to make either timing test green.
+open until the proxy reports `.failed(.timeout)`.
+
+Run 19 then exposed a second Shell-v2 fixture race: the fake peer fragmented a six-byte exit frame and
+immediately called `NWConnection.cancel()`. That abort is allowed to discard its own queued fragments,
+so the test sometimes delivered a genuinely truncated frame and incorrectly expected `remoteExit`.
+The failure reproduced locally on iteration 20. The fake peer now sends an ordered TCP final message,
+which preserves the intended counterexample: a complete valid exit frame wins while peer EOF races with
+CloseStdin. The corrected targeted case passed 100 consecutive runs and the full 496-test/67-suite
+serial gate passed. The existing malformed/truncated-frame cases still require `protocolFailure`; no
+production Shell arbitration or relay semantics were relaxed to make these timing tests green.
 
 ## Physical evidence and remaining gaps
 
