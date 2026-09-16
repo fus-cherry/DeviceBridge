@@ -83,7 +83,7 @@ timeout contract was retained. The fixture now uses an explicit handshake to hol
 open until the proxy reports `.failed(.timeout)`; the targeted test and the full 510-test serial gate
 both pass. No production relay semantics were relaxed to make either timing test green.
 
-## Physical evidence still open
+## Physical evidence and remaining gaps
 
 - A MuMu Android 12 emulator passed the production Workspace selection path: the Settings application
   remained foreground, clipboard showed `Available on demand` with enabled actions, and the helper
@@ -96,8 +96,18 @@ both pass. No production relay semantics were relaxed to make either timing test
   notification denial is also still open because this emulator runs Android 12; the policy unit test is
   the current evidence for that branch.
 - An unreadable non-text Android clipboard item still needs a designated-device trial.
-- iOS must be checked with a real prior debugging app for runner foreground disclosure, cancellation,
-  Stop and whether platform-supported restoration is feasible; no automatic restoration is promised.
+- A USB iPhone 12 on iOS 18.3.1 passed a production Workspace trial observed independently through
+  MobAI. Selecting the phone left `com.apple.Preferences` foreground and exposed clipboard/screenshot
+  as on-demand without starting the runner. Cancelling the first cold preparation after 16 seconds
+  published the stopped/retry state and produced no late foreground change. A retry connected in 86
+  seconds, captured and published a decoded 1170×2532 Settings screenshot, and still left Settings
+  foreground. Clipboard then showed Ready with both read and send enabled; no clipboard content was
+  read or replaced. Stop synchronously changed both capabilities to action required, disabled their
+  actions, and left Settings foreground. The signed build was reused by a 10-second warm reconnect.
+  The screenshot was neither copied nor saved, and no personal content operation was performed.
+- A real clipboard content action and its paste-permission/foreground disposition remain open, as do
+  locked/protected screens and a representative business debugging app. No automatic foreground
+  restoration is claimed from the Settings trial.
 - Existing signing, pairing, wireless soak and release-acceptance tasks retain their original status.
 
 No physical-device result is inferred from fixtures. No permission, signing, pairing or target
