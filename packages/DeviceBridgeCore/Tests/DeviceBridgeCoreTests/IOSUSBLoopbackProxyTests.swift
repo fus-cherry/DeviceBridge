@@ -130,14 +130,27 @@ struct IOSUSBLoopbackProxyTests {
         let usb = try await IOSUSBMuxConnection.connect(hardwareUDID: "PUBLIC-TARGET", port: 12345, socketPath: server.path, timeout: 2)
         let proxy = try await IOSUSBLoopbackProxy.listen(usb: usb, startupTimeout: .seconds(2), teardownTimeout: .milliseconds(40))
         let port = try #require(await proxy.port)
-        try await proxyClient(port: port) { fd in
-            let received = try muxRead(fd, count: 1)
-            let eof = try muxReadToEOF(fd)
-            #expect(received == Data([42]))
-            #expect(eof)
-            Thread.sleep(forTimeInterval: 0.15) // Fixture peer deliberately leaves its write side open.
+        let clientIsHoldingWriteSide = DispatchSemaphore(value: 0)
+        let releaseClient = DispatchSemaphore(value: 0)
+        let client = Task {
+            try await proxyClient(port: port) { fd in
+                let received = try muxRead(fd, count: 1)
+                let eof = try muxReadToEOF(fd)
+                #expect(received == Data([42]))
+                #expect(eof)
+                clientIsHoldingWriteSide.signal()
+                #expect(releaseClient.wait(timeout: .now() + 3) == .success)
+            }
         }
+        let clientIsHolding = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: clientIsHoldingWriteSide.wait(timeout: .now() + 3) == .success)
+            }
+        }
+        #expect(clientIsHolding)
         #expect(await proxy.waitForCompletion() == .failed(.timeout))
+        releaseClient.signal()
+        try await client.value
         try await server.finish()
     }
 
