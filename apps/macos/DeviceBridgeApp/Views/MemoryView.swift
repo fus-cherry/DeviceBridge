@@ -51,7 +51,7 @@ struct MemoryView: View {
                         Button(language.text("Discover again"), systemImage: "arrow.clockwise") {
                             model.retryIOSMemoryDiscovery()
                         }
-                        .disabled(!model.contentActionsAllowed || model.isMonitoringMemory)
+                        .disabled(!model.canDiscoverMemory)
                         .accessibilityIdentifier("memory-ios-discover")
                     } else {
                         Button(language.text("Start OS memory"), systemImage: "play.fill") {
@@ -61,7 +61,7 @@ struct MemoryView: View {
                         .accessibilityIdentifier("memory-start-android")
                     }
 
-                    if model.isMonitoringMemory || (isIOS && (model.memoryReadiness == .probing || model.memoryReadiness == .ready)) {
+                    if model.isMonitoringMemory || (isIOS && (model.memoryReadiness == .preparing || model.memoryReadiness == .ready)) {
                         Button(language.text("Stop"), systemImage: "stop.fill") {
                             model.stopMemoryMonitoring()
                         }
@@ -168,7 +168,7 @@ struct MemoryView: View {
 
     private var canStartAndroid: Bool {
         model.memoryReadiness == .ready
-            && model.contentActionsAllowed
+            && model.memoryAction.canStart
             && model.selectedDevice?.identity.platform == .android
             && model.selectedMemoryApplication != nil
             && !model.isMonitoringMemory
@@ -179,7 +179,8 @@ struct MemoryView: View {
     private var readinessColor: Color {
         switch model.memoryReadiness {
         case .ready: .green
-        case .idle, .probing: .secondary
+        case .idle, .availableOnDemand: .secondary
+        case .preparing: .blue
         case .actionRequired: .orange
         }
     }

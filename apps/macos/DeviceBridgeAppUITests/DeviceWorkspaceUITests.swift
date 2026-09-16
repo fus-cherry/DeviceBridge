@@ -316,7 +316,7 @@ final class DeviceWorkspaceUITests: XCTestCase {
 
         let readiness = app.staticTexts["clipboard-readiness"]
         XCTAssertTrue(readiness.waitForExistence(timeout: 3))
-        XCTAssertEqual(readiness.value as? String ?? readiness.label, "Ready")
+        XCTAssertEqual(readiness.value as? String ?? readiness.label, "Available on demand")
 
         let editor = app.textViews["clipboard-editor"]
         XCTAssertEqual(editor.value as? String ?? "", "")

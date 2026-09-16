@@ -79,6 +79,10 @@ public enum ClipboardOperationOutcome: Sendable, Equatable {
     }
 }
 
+public enum ClipboardForegroundDisposition: String, Sendable, Equatable {
+    case runnerRemainsForeground
+}
+
 public actor ClipboardService {
     /// The complete current text must fit; callers must never truncate to this limit.
     public static let maximumUTF8Bytes = HelperWireCodec.maximumClipboardUTF8Bytes
@@ -88,6 +92,7 @@ public actor ClipboardService {
     private let sessionNonce: String
     private let helperDeviceID: String
     public private(set) var currentSnapshot: ClipboardSnapshot?
+    public private(set) var lastForegroundDisposition: ClipboardForegroundDisposition?
 
     public init(
         store: DeviceSessionStore,
@@ -102,6 +107,7 @@ public actor ClipboardService {
     }
 
     public func read(now: Date = Date()) async -> ClipboardOperationOutcome {
+        lastForegroundDisposition = nil
         let token: SessionToken
         do {
             token = try await store.beginOperation(.clipboardRead)
@@ -137,6 +143,7 @@ public actor ClipboardService {
         guard await canPublishAndFinish(token) else { return .stale }
         guard validate(result, for: token) else { return malformedOutcome() }
         guard result.status == .success else { return failureOutcome(for: result) }
+        guard recordForegroundDisposition(from: result) else { return malformedOutcome() }
         guard let text = result.payload?["text"]?.stringValue else {
             return malformedOutcome()
         }
@@ -153,6 +160,7 @@ public actor ClipboardService {
     }
 
     public func write(_ text: String, now: Date = Date()) async -> ClipboardOperationOutcome {
+        lastForegroundDisposition = nil
         guard text.utf8.count <= Self.maximumUTF8Bytes else { return tooLargeOutcome() }
 
         let token: SessionToken
@@ -190,6 +198,7 @@ public actor ClipboardService {
         guard await canPublishAndFinish(token) else { return .stale }
         guard validate(result, for: token) else { return malformedOutcome() }
         guard result.status == .success else { return failureOutcome(for: result) }
+        guard recordForegroundDisposition(from: result) else { return malformedOutcome() }
         guard result.payload?["written"]?.boolValue == true else { return malformedOutcome() }
         return .written(at: result.completedAt)
     }
@@ -216,9 +225,14 @@ public actor ClipboardService {
     }
 
     private func canPublishAndFinish(_ token: SessionToken) async -> Bool {
-        let canPublish = await store.canPublish(token)
         await store.finishOperation(token)
-        return canPublish
+    }
+
+    private func recordForegroundDisposition(from result: HelperResult) -> Bool {
+        guard let raw = result.payload?["foregroundDisposition"]?.stringValue else { return true }
+        guard let disposition = ClipboardForegroundDisposition(rawValue: raw) else { return false }
+        lastForegroundDisposition = disposition
+        return true
     }
 
     private func validate(_ result: HelperResult, for token: SessionToken) -> Bool {
@@ -250,6 +264,9 @@ public actor ClipboardService {
             case "clipboard.foreground_required":
                 safeMessage = "The clipboard helper could not enter the foreground."
                 recoveryAction = "Unlock the device, keep the managed helper visible, and retry."
+            case "clipboard.write_unverified":
+                safeMessage = "The device did not confirm the clipboard write."
+                recoveryAction = "Keep the managed helper visible and retry."
             default:
                 safeMessage = "The managed clipboard helper needs attention."
                 recoveryAction = "Unlock the device, open the managed helper, and retry."

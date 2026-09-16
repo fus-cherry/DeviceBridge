@@ -131,18 +131,29 @@ struct WorkspaceInventoryChecks {
                 throw Failure.failed("Android fixture missing")
             }
             model.select(device.identity)
+            try await wait { !model.isSelecting }
+            if case .availableOnDemand = model.clipboardReadiness { }
+            else { throw Failure.failed("Android selection must publish on-demand clipboard availability") }
+            try require(await runner.calls == 0,
+                "Android selection must not launch or foreground the helper")
             try await wait { model.canStartClipboardOperation }
+            try require(model.clipboardReadinessText == "Available on demand",
+                "on-demand capability status and enabled action must come from the same state")
             let text = "Keyboard transfer\n中文🙂"
             model.clipboardText = text
             model.requestClipboardSend()
+            try require(!model.canStartClipboardOperation && model.clipboardReadinessText != "Ready",
+                "a busy clipboard action must never retain a Ready label with disabled controls")
             try await wait { !model.isClipboardBusy }
+            try require(model.clipboardReadinessText == "Ready" && model.canStartClipboardOperation,
+                "prepared clipboard status and action availability diverged")
             try require(model.clipboardFeedback == "Sent", "ready fixture send did not complete")
             model.clipboardText = ""
             model.requestClipboardRead()
             try await wait { !model.isClipboardBusy }
             try require(model.clipboardFeedback == "Read" && model.clipboardText == text,
                         "explicit fixture read did not match the sent content")
-            try await wait { model.memoryReadiness == .ready && model.contentActionsAllowed }
+            try await wait { model.memoryReadiness == .ready && model.agentActionsAllowed }
             try require(model.memorySamples.isEmpty && !model.isMonitoringMemory,
                         "readiness must not start memory monitoring")
             let started = ContinuousClock.now

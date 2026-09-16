@@ -6,7 +6,6 @@ import DeviceBridgeSecureChannel
 @MainActor
 protocol RunnerForegroundControlling: AnyObject {
     func isRunnerForeground() -> Bool
-    func restoreHome()
 }
 
 @MainActor
@@ -24,15 +23,10 @@ final class XCTestRunnerForegroundController: RunnerForegroundControlling {
         bundleIdentifier == runnerID && applicationState == .active && runnerState == .runningForeground
     }
 
-    func restoreHome() {
-        // Never background an app the user opened after the host activated this runner.
-        guard isRunnerForeground() else { return }
-        XCUIDevice.shared.press(.home)
-    }
 }
 
-/// One MainActor operation owns admission, publication and Home restoration. The host activates
-/// the existing runner before sending; this adapter neither activates apps nor approves prompts.
+/// One MainActor operation owns admission and publication. The host activates the existing runner
+/// only for an explicit request; this adapter neither switches to Home nor approves prompts.
 @MainActor
 final class RunnerClipboardHandler: IOSRunnerClipboardHandling {
     private let commands: ClipboardCommands
@@ -59,7 +53,7 @@ final class RunnerClipboardHandler: IOSRunnerClipboardHandling {
                 return self.foreground.isRunnerForeground()
             })
         // An OS read can remain suspended after cancellation. Its independent deadline still
-        // invalidates ownership and restores Home, without joining that read's eventual return.
+        // invalidates ownership without joining that read's eventual return.
         let expiry = Task { @MainActor [weak self] in
             do { try await Task.sleep(until: context.deadline, clock: .continuous) }
             catch { return }
@@ -104,7 +98,7 @@ final class RunnerClipboardHandler: IOSRunnerClipboardHandling {
             }
         } onCancel: {
             // Task.cancel() calls this synchronously on the server's executor. Only enqueue
-            // cleanup here; MainActor invalidates ownership before performing the Home action.
+            // ownership cleanup here.
             Task { @MainActor [weak self] in self?.finish(id) }
         }
     }
@@ -112,7 +106,6 @@ final class RunnerClipboardHandler: IOSRunnerClipboardHandling {
     private func finish(_ id: UUID) {
         guard operationID == id else { return }
         operationID = nil
-        if foreground.isRunnerForeground() { foreground.restoreHome() }
     }
 
     private func map(_ result: ClipboardCommandResult, request: HelperRequest) -> HelperResult {
@@ -122,8 +115,16 @@ final class RunnerClipboardHandler: IOSRunnerClipboardHandling {
                 guard let text = result.text else {
                     return failure(request, .invalid, "clipboard.invalid", "The clipboard response is invalid.")
                 }
-                payload = ["text": .string(text)]
-            } else { payload = ["written": .bool(true)] }
+                payload = [
+                    "text": .string(text),
+                    "foregroundDisposition": .string("runnerRemainsForeground"),
+                ]
+            } else {
+                payload = [
+                    "written": .bool(true),
+                    "foregroundDisposition": .string("runnerRemainsForeground"),
+                ]
+            }
             return HelperResult(requestID: request.requestID, status: .success, completedAt: Date(), payload: payload)
         }
         // Only fixed local messages cross the wire, never an OS error or rejected content.

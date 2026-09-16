@@ -1,5 +1,18 @@
 # Quickstart and Validation Guide
 
+## Capability lifecycle validation — 2026-09-16
+
+After selecting a device, verify that the currently debugged phone application remains foreground and
+that no helper/runner or notification/paste prompt appears. The selected session and independent
+device information, Shell, file/image and memory entry points become available without clipboard or
+screenshot preparation. The first explicit Read/Send/Capture action may prepare its required helper;
+the Mac UI must label this on-demand state before the action and show the exact busy or recovery reason.
+
+Re-select the same healthy device and confirm that the session generation, inputs, previews and any
+already prepared capability remain unchanged. For clipboard, separately verify explicit empty text,
+unavailable/redacted access, denial, foreground requirement and write verification. Returning the
+iPhone to Home is a failure, not restoration of the debugging context.
+
 ## Current startup behavior — Build 9, 2026-09-09
 
 [Startup feedback and persistent build reuse](validation/startup-feedback-and-reuse-20260909.md)

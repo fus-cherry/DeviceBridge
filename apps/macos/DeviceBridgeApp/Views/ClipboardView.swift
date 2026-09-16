@@ -98,7 +98,7 @@ struct ClipboardView: View {
         .onDisappear { invalidateExport() }
     }
 
-    private var canInteract: Bool { model.isClipboardReady && !model.isClipboardBusy }
+    private var canInteract: Bool { model.canStartClipboardOperation }
     private var byteCount: Int { model.clipboardText.utf8.count }
     private var exceedsLimit: Bool { byteCount > ClipboardService.maximumUTF8Bytes }
 
@@ -197,6 +197,7 @@ struct ClipboardView: View {
         case .ready: .green
         case .preparing: .blue
         case .idle: .secondary
+        case .availableOnDemand: .blue
         case .actionRequired: .orange
         }
     }

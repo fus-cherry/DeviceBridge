@@ -102,7 +102,7 @@ struct ScreenshotView: View {
         switch model.screenshotReadiness {
         case .ready: .green
         case .idle: .secondary
-        case .preparing: .blue
+        case .availableOnDemand, .preparing: .blue
         case .actionRequired: .orange
         }
     }

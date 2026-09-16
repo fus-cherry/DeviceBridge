@@ -6,8 +6,12 @@ import Foundation
 struct DeviceSelectionChecks {
     @MainActor static func main() async throws {
         let runner = SelectionProbeRunner()
+        let runnerPreparations = LockedCounter()
         let model = WorkspaceViewModel(arguments: [], runner: runner,
-            iosRunnerFactory: { _ in throw IOSRunnerSourceConfigurationError.signingTeamRequired },
+            iosRunnerFactory: { _ in
+                runnerPreparations.increment()
+                throw IOSRunnerSourceConfigurationError.signingTeamRequired
+            },
             iosMemoryProvider: NoSelectionMemory())
         defer { model.stop() }
         model.start()
@@ -17,7 +21,7 @@ struct DeviceSelectionChecks {
         model.select(first.identity)
         try require(model.deviceSelection?.device.identity == first.identity && model.deviceSelection?.isChecking == true,
                     "first click must immediately present the pending device before probe completion")
-        try require(model.selectedDeviceIdentity == nil && !model.contentActionsAllowed,
+        try require(model.selectedDeviceIdentity == nil && !model.agentActionsAllowed,
                     "pending feedback must not commit a session or grant content access")
         try await wait { await runner.probes == 1 }
         // The probe remains held while MainActor accepts a second device selection.
@@ -32,7 +36,7 @@ struct DeviceSelectionChecks {
         try await wait { !model.isSelecting }
         try require(model.deviceSelection?.device.identity == second.identity && model.deviceSelection?.isChecking == false,
                     "a failed first connection must remain visibly actionable without a committed device")
-        try require(model.selectedDeviceIdentity == nil && !model.contentActionsAllowed,
+        try require(model.selectedDeviceIdentity == nil && !model.agentActionsAllowed,
                     "failed candidate must not become an authorized selection")
         try require(await runner.restarts == 0, "failed probes must never restart a system service automatically")
         let repairRevision = model.iosConnectionRepairRevision!
@@ -42,14 +46,19 @@ struct DeviceSelectionChecks {
         model.repairIOSConnection(identity: second.identity, expectedRevision: repairRevision)
         try await wait { await runner.probes == 3 }
         try require(await runner.restarts == 1, "explicit recovery must restart exactly once before probing")
-        try require(model.selectedDeviceIdentity == nil && !model.contentActionsAllowed,
+        try require(model.selectedDeviceIdentity == nil && !model.agentActionsAllowed,
                     "service restart must not bypass the real command readiness gate")
         await runner.release(probe: 3, exitCode: 0)
         try await wait { model.selectedDeviceIdentity == second.identity && !model.isSelecting }
         try require(model.deviceSelection == nil, "successful commit must dismiss pending feedback")
+        try require(runnerPreparations.value == 0,
+                    "selection must not prepare or foreground the iOS runner")
         model.select(second.identity)
-        try await wait { await runner.probes == 4 }
+        try await Task.sleep(for: .milliseconds(50))
+        try require(await runner.probes == 3 && !model.isSelecting,
+                    "re-selecting the healthy active device must be a no-op")
         model.select(first.identity)
+        try await wait { await runner.probes == 4 }
         model.repairIOSConnection(identity: second.identity, expectedRevision: repairRevision)
         try require(await runner.restarts == 1, "stale repair confirmation restarted the service")
         await runner.hideFirstDevice()
@@ -107,6 +116,13 @@ struct DeviceSelectionChecks {
         if !condition { throw Failure.failed(message) }
     }
     enum Failure: Error { case failed(String) }
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.withLock { count } }
+    func increment() { lock.withLock { count += 1 } }
 }
 
 private actor SelectionProbeRunner: HostCommandRunning {

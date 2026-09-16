@@ -64,6 +64,24 @@ class CompileCoreCheckTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "DeviceBridgeCoreChecks"):
             self.helper.compiler_command(self.build, ["Check.swift"])
 
+    def test_swiftpm_products_directory_uses_product_modules_without_stale_metadata(self):
+        products = self.build / "out" / "Products" / "Debug"
+        metadata = self.build / "arm64-apple-macosx" / "debug"
+        products.mkdir(parents=True)
+        metadata.mkdir(parents=True)
+        (products / "DeviceBridgeCore.swiftmodule").mkdir()
+        (metadata / "description.json").write_text(json.dumps({"swiftCommands": {
+            "core": {"moduleName": "DeviceBridgeCore", "importPath": "/stale/modules",
+                     "otherArguments": ["-sdk", "/stale/sdk"]},
+        }}))
+        (products / "libDeviceBridgeCoreChecks.a").touch()
+
+        self.assertEqual(
+            self.helper.compiler_command(products, ["Check.swift"]),
+            ["swiftc", "-parse-as-library", "-swift-version", "6", "-I", str(products),
+             str(products / "libDeviceBridgeCoreChecks.a"), "Check.swift"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

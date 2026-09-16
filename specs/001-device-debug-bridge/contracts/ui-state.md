@@ -1,5 +1,17 @@
 # UI State Contract
 
+## Capability lifecycle correction — 2026-09-16
+
+- Selecting or recovering a device never starts or foregrounds a mobile helper/runner.
+- `Available on demand` enables the capability's explicit primary action and explains that the action
+  may temporarily foreground a managed helper. It is not rendered as Ready.
+- Status, action availability, disabled reason and recovery action come from one capability snapshot.
+- A connection-level block is incorporated into that projection; it cannot leave a green Ready label
+  beside a disabled primary action without an adjacent reason.
+- Same-device selection on a healthy current transport changes no session, input, preview or helper.
+- Clipboard foreground preparation begins only after Read/Send. Screenshot runner preparation begins
+  only after Capture unless an already-owned compatible runner is reused.
+
 ## Window Layout
 
 The Mac application uses one primary window:

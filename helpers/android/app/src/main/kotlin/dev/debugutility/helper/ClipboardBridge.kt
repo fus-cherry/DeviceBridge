@@ -259,13 +259,22 @@ class ClipboardBridge(private val context: Context) : AutoCloseable {
     }
 
     private fun readClipboard(requestId: String): ByteArray = try {
-        val text = onMainThread {
+        val value = onMainThread {
             val manager = context.getSystemService(ClipboardManager::class.java)
             val clip = manager.primaryClip
-            if (clip == null || clip.itemCount == 0) ""
-            else ClipboardText.join((0 until clip.itemCount).asSequence().map { clip.getItemAt(it).text })
+            if (clip == null) ClipboardReadValue.Unavailable
+            else ClipboardText.read((0 until clip.itemCount).asSequence().map { clip.getItemAt(it).text })
         }
-        successResult(requestId, JSONObject().put("text", text))
+        when (value) {
+            ClipboardReadValue.Unavailable -> errorResult(
+                requestId,
+                "actionRequired",
+                "clipboard.unavailable",
+                "No readable text is currently available.",
+                "Copy text on the device, keep the helper visible, and retry."
+            )
+            is ClipboardReadValue.Text -> successResult(requestId, JSONObject().put("text", value.value))
+        }
     } catch (_: ClipboardText.TooLarge) {
         errorResult(requestId, "failure", "clipboard.too_large", "Clipboard text exceeds 1 MiB (UTF-8). Nothing was truncated or transferred.")
     } catch (_: SecurityException) {
@@ -286,11 +295,25 @@ class ClipboardBridge(private val context: Context) : AutoCloseable {
             return invalidResult(requestId, "clipboard.too_large")
         }
         return try {
-            onMainThread {
-                context.getSystemService(ClipboardManager::class.java)
-                    .setPrimaryClip(ClipData.newPlainText("Device Bridge", text))
+            val verified = onMainThread {
+                val manager = context.getSystemService(ClipboardManager::class.java)
+                manager.setPrimaryClip(ClipData.newPlainText("Device Bridge", text))
+                val clip = manager.primaryClip
+                val current = if (clip == null) ClipboardReadValue.Unavailable
+                    else ClipboardText.read((0 until clip.itemCount).asSequence().map { clip.getItemAt(it).text })
+                current == ClipboardReadValue.Text(text)
             }
-            successResult(requestId, JSONObject().put("written", true))
+            if (verified) {
+                successResult(requestId, JSONObject().put("written", true))
+            } else {
+                errorResult(
+                    requestId,
+                    "actionRequired",
+                    "clipboard.write_unverified",
+                    "Android did not confirm the clipboard write.",
+                    "Keep the helper visible and retry."
+                )
+            }
         } catch (_: SecurityException) {
             errorResult(requestId, "permissionDenied", "clipboard.denied", "Clipboard access was denied.")
         } catch (_: Exception) {
