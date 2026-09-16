@@ -75,9 +75,13 @@ legacy state source was retained.
 - `xcodebuild analyze` for the `DeviceBridge` macOS scheme succeeded.
 - Localization JSON parsing and `git diff --check` passed.
 
-An earlier unconstrained full Core run exposed two timing-sensitive failures under concurrent load.
-Both suites passed alone, and the required full serial run above passed. This record treats the serial
-result as qualification evidence and does not conceal the parallel scheduling sensitivity.
+CI first exposed an ADB Shell-v2 scheduling-sensitive fixture while Swift was building test targets in
+parallel, so the qualification command now fixes both test and build concurrency with
+`--no-parallel -j 1`. A later serial CI run exposed a separate wall-clock assumption in the unmatched USB half-close
+fixture: its client slept for 150 ms and could close before a delayed 40 ms timer ran. The production
+timeout contract was retained. The fixture now uses an explicit handshake to hold the client write side
+open until the proxy reports `.failed(.timeout)`; the targeted test and the full 510-test serial gate
+both pass. No production relay semantics were relaxed to make either timing test green.
 
 ## Physical evidence still open
 
