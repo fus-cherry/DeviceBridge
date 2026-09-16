@@ -254,8 +254,11 @@ public enum IOSRunnerSessionServer {
               result.completedAt <= now else { throw Failure.rejected }
         guard result.status == .success else { return }
         if request.action == .clipboardRead {
-            guard let payload = result.payload, Set(payload.keys) == ["text"],
+            guard let payload = result.payload,
+                  Set(payload.keys) == ["text"] || Set(payload.keys) == ["text", "foregroundDisposition"],
                   let text = payload["text"]?.stringValue,
+                  payload["foregroundDisposition"] == nil
+                    || payload["foregroundDisposition"]?.stringValue == "clipboardHostRemainsForeground",
                   text.utf8.count <= HelperWireCodec.maximumClipboardUTF8Bytes else { throw Failure.rejected }
         } else if request.action == .deviceInformation {
             guard let payload = result.payload else { throw Failure.rejected }
@@ -264,7 +267,13 @@ public enum IOSRunnerSessionServer {
             guard let payload = result.payload else { throw Failure.rejected }
             _ = try IOSRunnerScreenshotWire.Descriptor(payload: payload)
         } else {
-            guard result.payload == ["written": .bool(true)] else { throw Failure.rejected }
+            guard let payload = result.payload,
+                  Set(payload.keys) == ["written"] || Set(payload.keys) == ["written", "foregroundDisposition"],
+                  payload["written"]?.boolValue == true,
+                  payload["foregroundDisposition"] == nil
+                    || payload["foregroundDisposition"]?.stringValue == "clipboardHostRemainsForeground" else {
+                throw Failure.rejected
+            }
         }
     }
 

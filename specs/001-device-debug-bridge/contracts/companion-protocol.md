@@ -9,17 +9,24 @@ an explicitly represented empty item) or a verified write receipt; inaccessible/
 is `actionRequired`/`permissionDenied`, never an empty success. Android notification permission is
 outside clipboard bootstrap and belongs only to explicit keep-alive start.
 Successful iOS clipboard results include
-`foregroundDisposition: "runnerRemainsForeground"`; the host surfaces that truthful terminal state
+`foregroundDisposition: "clipboardHostRemainsForeground"`; the host surfaces that truthful terminal state
 and never claims to restore the prior application when the platform exposes no verified restoration
 mechanism. Android results omit the field because its foreground behavior is already explicit in
 helper preparation.
+
+iOS uses two independent signed applications. `dev.debugutility.DeviceBridgeHost` is the minimal
+XCUITest target for the background screenshot Runner on USB port 49872.
+`dev.debugutility.DeviceBridgeClipboardHost` is the ordinary foreground clipboard Host on USB port
+49873. They do not share a process, lifecycle owner, readiness state or heartbeat. Preparing or using
+screenshots cannot launch/activate the clipboard Host, and clipboard failure cannot revoke screenshot
+readiness.
 
 ## Scope
 
 Version 1 supports only:
 
 - helper-scoped device identity and version negotiation;
-- clipboard text read and write;
+- clipboard text read and write through the platform-specific helper;
 - screenshot capture through the iOS XCUITest runner;
 - narrow file hashing/inbox references when advertised; and
 - a visible, lease-bounded Android Wi-Fi keep-alive session.
@@ -90,7 +97,8 @@ carries the current public launch identifier and a fresh random challenge, as re
 [the iOS channel contract](ios-runner-channel.md); its response must bind both before readiness.
 This iOS bootstrap exception does not change the existing Android identity payload. Success reports the helper device ID, semantic helper version, supported
 protocol versions, and advertised actions. Android may advertise clipboard, file hash, and keep-alive;
-iOS runner version 1 advertises clipboard, screenshot, status, and stop.
+iOS screenshot Runner version 1 advertises screenshot, device information, status, and stop. The
+separate iOS clipboard Host advertises clipboard read/write, identity, status, and stop.
 
 ### `clipboard.read`
 
@@ -141,19 +149,22 @@ matching selected wireless session remains active.
   service. A helper crash cannot leave a process-owned lock held.
 - The helper has no LAN listener, accessibility, keyboard, device-owner, or broad storage privilege.
 
-## iOS Runner Transport
+## iOS Transport
 
 The concrete lifecycle, framing, transport experiment, and go/no-go checks are specified in
-[ios-runner-channel.md](ios-runner-channel.md). The channel remains unimplemented until those checks
-pass; the following rules are acceptance requirements, not evidence of an available provider.
+[ios-runner-channel.md](ios-runner-channel.md). The selected-USB authenticated channels are implemented;
+physical wireless and locked/protected-screen qualification remain open.
 
 - `IOSRunnerManager` checks the embedded runner version and signing readiness, then uses Xcode's
   build-for-testing/test workflow to install and start the runner on the selected device.
-- The runner accepts requests only through a session-scoped host-to-device channel supplied by the
-  selected iOS transport provider; it never opens a general LAN service.
+- `IOSClipboardHostLauncher` installs and launches the separately signed clipboard Host only from an
+  explicit clipboard action. `IOSClipboardHostChannel` foregrounds it only for the requested read or
+  write; identity/heartbeat/stop never change the phone foreground.
+- Both processes accept requests only through their own session-scoped USB channel; neither opens a
+  general LAN service.
 - Host and runner complete the identity, version, and nonce handshake before requests.
-- Closing, deselecting, transport replacement, or explicit stop terminates the channel and invalidates
-  its nonce.
+- Closing, deselecting, transport replacement, or explicit stop terminates both independent channels
+  and invalidates their nonces.
 - If signing, Developer Mode, trust, or transport is unavailable, the result is `actionRequired` or
   `helperRequired`; installation alone is never reported as command-ready.
 - Clipboard reads may show platform permission UI and finish only after the developer responds.

@@ -24,12 +24,19 @@ struct IOSRunnerWorkspacePhysicalCheck {
             let configuration = try IOSRunnerSourceConfiguration(
                 helperResourcesURL: URL(fileURLWithPath: resources), signingTeamID: team)
             let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
-            let manager = IOSRunnerManager(xcodebuildURL: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
+            let screenshotManager = IOSRunnerManager(xcodebuildURL: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
                 projectURL: configuration.projectURL, scheme: configuration.scheme,
                 signingTeamID: configuration.signingTeamID, runner: PhysicalBuildDiagnosticsRunner(),
                 launcher: IOSRunnerLauncher(xcrunURL: xcrun, channels: IOSRunnerChannelFactory(xcrunURL: xcrun),
                     maximumRunnerLifetime: .seconds(180)))
-            let model = WorkspaceViewModel(arguments: [], iosRunnerFactory: { _ in manager })
+            let clipboardManager = IOSRunnerManager(xcodebuildURL: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
+                projectURL: configuration.projectURL, scheme: configuration.scheme,
+                signingTeamID: configuration.signingTeamID, runner: PhysicalBuildDiagnosticsRunner(),
+                launcher: IOSClipboardHostLauncher(xcrunURL: xcrun,
+                    channels: IOSClipboardHostChannelFactory(xcrunURL: xcrun), maximumLifetime: .seconds(180)))
+            let model = WorkspaceViewModel(arguments: [],
+                iosScreenshotRunnerFactory: { _ in screenshotManager },
+                iosClipboardHostFactory: { _ in clipboardManager })
             do {
                 model.start()
                 try await wait(seconds: 20) { !model.isRefreshing }
@@ -39,12 +46,21 @@ struct IOSRunnerWorkspacePhysicalCheck {
                 }
                 print("Physical Workspace: selected USB device discovered")
                 model.select(device.identity)
-                try await wait(seconds: 370) { !model.isSelecting && model.isScreenshotReady }
-                guard model.isScreenshotReady, model.isClipboardReady else {
+                try await wait(seconds: 25) { !model.isSelecting }
+                model.reconnectIOSPreparation(.screenshot)
+                if environment["DEVICEBRIDGE_WORKSPACE_CLIPBOARD_REPLACE"] == "1" {
+                    model.reconnectIOSPreparation(.clipboard)
+                }
+                try await wait(seconds: 370) {
+                    model.screenshotReadiness == .ready
+                        && (environment["DEVICEBRIDGE_WORKSPACE_CLIPBOARD_REPLACE"] != "1"
+                            || model.clipboardReadiness == .ready)
+                }
+                guard model.screenshotReadiness == .ready else {
                     print("Physical Workspace: readiness \(model.screenshotReadinessDetail ?? "unavailable")")
                     throw Failure.preparation
                 }
-                print("Physical Workspace: authenticated screenshot and clipboard capabilities ready")
+                print("Physical Workspace: authenticated requested iOS capabilities ready")
                 let memoryApplication = environment["DEVICEBRIDGE_WORKSPACE_COEXIST_APP"]
                 let memoryPID = environment["DEVICEBRIDGE_WORKSPACE_COEXIST_PID"].flatMap(Int.init)
                 if let memoryApplication {

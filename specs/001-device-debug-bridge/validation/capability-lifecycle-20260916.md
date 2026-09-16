@@ -34,9 +34,11 @@ on-demand foreground transaction; strict no-foreground environments report clipb
 - T134 clipboard correctness: complete in automated coverage. Publication and operation finish are one
   actor transaction; Android empty/unavailable are distinct; writes are read back; notification consent
   is requested only by the explicit Wi-Fi keep-alive action.
-- T135 iOS foreground contract: complete in automated coverage. Clipboard success explicitly reports
-  `runnerRemainsForeground`; the runner never presses Home and the UI tells the user to return to the
-  prior app. Automatic restoration remains unclaimed pending physical feasibility evidence.
+- T135 iOS foreground contract: complete. Screenshot and clipboard now have separate signed targets,
+  bundle identifiers, ports, managers, preparation states and heartbeat owners. The background XCUITest
+  runner never launches or activates the clipboard Host. An explicit clipboard action launches
+  `dev.debugutility.DeviceBridgeClipboardHost`, and success truthfully reports
+  `clipboardHostRemainsForeground`; no code presses Home or claims to restore the prior application.
 - T136 copy and obsolete path removal: complete. English/Chinese readiness and recovery copy follows
   the same action model and there is no retained selection-time readiness source.
 - T137 automated qualification: complete. External physical cases remain open below.
@@ -50,6 +52,8 @@ on-demand foreground transaction; strict no-foreground environments report clipb
 | Selection-time clipboard/runner preparation calls | 2 | 0 |
 | Clipboard publication/finish actor turns | 2 | 1 |
 | iOS clipboard success routes that press Home | 1 | 0 |
+| Mutable iOS capability states sharing one writer | 2 | 0 |
+| iOS apps sharing screenshot and clipboard ownership | 1 | 0 |
 
 The new state separates `availableOnDemand`, `preparing`, `ready` and `actionRequired`, binds it to the
 selected session revision, and derives status text, detail and button admission together. No parallel
@@ -57,8 +61,10 @@ legacy state source was retained.
 
 ## Automated evidence
 
-- `swift test --package-path packages/DeviceBridgeCore --no-parallel -j 1`: 510 tests in 67 suites
+- `swift test --package-path packages/DeviceBridgeCore --no-parallel -j 1`: 496 tests in 67 suites
   passed; physical and signing-dependent tests remained explicitly skipped.
+- `swift test --package-path packages/DeviceBridgeSecureChannel --quiet`: 77 transport/protocol tests
+  and 6 TLS support tests passed.
 - Android Gradle `testDebugUnitTest assembleDebug`: passed, including empty/unavailable clipboard and
   explicit notification-permission policy coverage.
 - `bash scripts/check-device-selection.sh`: passed, including first/second-click feedback, same-device
@@ -96,18 +102,22 @@ both pass. No production relay semantics were relaxed to make either timing test
   notification denial is also still open because this emulator runs Android 12; the policy unit test is
   the current evidence for that branch.
 - An unreadable non-text Android clipboard item still needs a designated-device trial.
-- A USB iPhone 12 on iOS 18.3.1 passed a production Workspace trial observed independently through
-  MobAI. Selecting the phone left `com.apple.Preferences` foreground and exposed clipboard/screenshot
-  as on-demand without starting the runner. Cancelling the first cold preparation after 16 seconds
-  published the stopped/retry state and produced no late foreground change. A retry connected in 86
-  seconds, captured and published a decoded 1170×2532 Settings screenshot, and still left Settings
-  foreground. Clipboard then showed Ready with both read and send enabled; no clipboard content was
-  read or replaced. Stop synchronously changed both capabilities to action required, disabled their
-  actions, and left Settings foreground. The signed build was reused by a 10-second warm reconnect.
-  The screenshot was neither copied nor saved, and no personal content operation was performed.
-- A real clipboard content action and its paste-permission/foreground disposition remain open, as do
-  locked/protected screens and a representative business debugging app. No automatic foreground
-  restoration is claimed from the Settings trial.
+- A USB iPhone 12 on iOS 18.3.1 passed the redesigned production Workspace flow, observed independently
+  through MobAI. Selecting the phone performed no mobile launch. Preparing the screenshot Runner and
+  capturing a decoded 1170×2532 screenshot left the representative business app
+  `com.daohong.billard-chain` foreground. The Runner used `dev.debugutility.DeviceBridgeHost` on port
+  49872 and did not start the clipboard Host.
+- The separate `dev.debugutility.DeviceBridgeClipboardHost` on port 49873 completed exact text
+  write/read round trips, including `DeviceBridge-iOS-20260916-v014-isolated`. Returning to the
+  business app suspended that ordinary foreground Host as iOS requires; the clipboard card alone
+  changed to action-required while the screenshot card remained connected. This independently
+  verifies the two state owners and eliminates the former cross-capability overwrite/package collision.
+- Stop synchronously removed both capability bindings and disabled their actions. The captured image
+  was not copied, saved or inspected for personal content. No automatic foreground restoration is
+  claimed; clipboard foregrounding occurs only on an explicit clipboard action.
+- Locked/protected-screen behavior remains physically open. A Siri lock attempt did not lock the
+  phone (`passcodeRequired=false`), so the subsequent successful screenshot is not classified as a
+  lock-screen result. Deterministic error mapping remains covered by automated tests.
 - Existing signing, pairing, wireless soak and release-acceptance tasks retain their original status.
 
 No physical-device result is inferred from fixtures. No permission, signing, pairing or target

@@ -159,7 +159,7 @@ public actor IOSRunnerLauncher: IOSRunnerChannelLaunching {
 
     private func loadArtifacts(launch: IOSRunnerLaunch, products: IOSRunnerBuildProducts,
                                deadline: ContinuousClock.Instant) async throws -> IOSRunnerSignedArtifacts {
-        let result = ArtifactResult()
+        let result = IOSRunnerArtifactResult()
         let loader = artifacts
         let work = Task {
             do { await result.resolve(.success(try await loader.load(launch: launch, products: products))) }
@@ -229,7 +229,7 @@ public actor IOSRunnerLauncher: IOSRunnerChannelLaunching {
 
 /// Only read-only artifact validation may finish after this result resolves. It cannot launch code.
 /// This owner lets startup stop waiting on blocked filesystem/security APIs without accepting late data.
-private actor ArtifactResult {
+actor IOSRunnerArtifactResult {
     private var resolved: Result<IOSRunnerSignedArtifacts, any Error>?
     private var continuation: CheckedContinuation<IOSRunnerSignedArtifacts, any Error>?
 

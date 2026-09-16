@@ -35,6 +35,7 @@ public actor IOSRunnerUSBEndpoint {
     private let reader: any IOSRunnerPublicRecordReading
     private let usbConnector: any IOSRunnerUSBConnecting
     private let startupTimeout: Duration
+    private let devicePort: UInt16
     private var phase = Phase.idle
     private var work: Task<Void, Never>?
     private var timer: Task<Void, Never>?
@@ -43,13 +44,14 @@ public actor IOSRunnerUSBEndpoint {
 
     public init(launch: IOSRunnerLaunch, hostCertificateDER: Data, helperBuild: String,
                 reader: any IOSRunnerPublicRecordReading, usb: any IOSRunnerUSBConnecting = IOSRunnerUSBConnector(),
-                startupTimeout: Duration = .seconds(60)) {
+                startupTimeout: Duration = .seconds(60), devicePort: UInt16 = 49_872) {
         self.launch = launch
         self.hostCertificateDER = hostCertificateDER
         self.helperBuild = helperBuild
         self.reader = reader
         self.usbConnector = usb
         self.startupTimeout = startupTimeout
+        self.devicePort = devicePort
     }
 
     public func open(process: any IOSRunnerProcessOwning) async throws -> PinnedEndpoint {
@@ -96,7 +98,7 @@ public actor IOSRunnerUSBEndpoint {
             try await requireOpeningAndLiveChild(process)
             let certificate = try PublicBootstrapRecord.validate(publicRecord, launchID: launch.id,
                 hostCertificateDER: hostCertificateDER, helperBuild: helperBuild)
-            let connected = try await usbConnector.connect(hardwareUDID: launch.deviceIdentifier, port: 49872)
+            let connected = try await usbConnector.connect(hardwareUDID: launch.deviceIdentifier, port: devicePort)
             do { try requireOpening() }
             catch { await connected.close(); throw error }
             usb = connected

@@ -159,7 +159,8 @@ public actor IOSRunnerBuildWorkspace {
         do {
             let apps = staging.appendingPathComponent("Debug-iphoneos", isDirectory: true)
             try fm.createDirectory(at: apps, withIntermediateDirectories: true)
-            for name in ["DeviceBridgeRunnerUITests-Runner.app", "DeviceBridgeHost.app"] {
+            for name in ["DeviceBridgeRunnerUITests-Runner.app", "DeviceBridgeHost.app",
+                         "DeviceBridgeClipboardHost.app"] {
                 let app = source.appendingPathComponent("Debug-iphoneos/" + name)
                 try rejectSymlinks(app)
                 try fm.copyItem(at: app, to: apps.appendingPathComponent(name))

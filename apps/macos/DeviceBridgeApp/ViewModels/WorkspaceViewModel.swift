@@ -42,6 +42,7 @@ enum DeviceSelectionPresentation {
 
 /// A display-only projection of the current selected session. It cannot authorize device actions.
 struct IOSPreparationPresentation {
+    enum Owner: String, Identifiable { case clipboard, screenshot; var id: String { rawValue } }
     enum Stage: Int { case building = 1, starting = 2 }
     enum State: Equatable {
         case preparing(Stage)
@@ -50,9 +51,12 @@ struct IOSPreparationPresentation {
         case stopped
     }
     let id = UUID()
+    let owner: Owner
     let startedAt = ContinuousClock.now
     var state: State = .preparing(.building)
     private(set) var finishedAt: ContinuousClock.Instant?
+
+    init(owner: Owner) { self.owner = owner }
 
     var isPreparing: Bool {
         if case .preparing = state { return true }
@@ -105,7 +109,8 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     @Published private(set) var isClipboardBusy = false
     @Published private var screenshotCapabilityState = SessionCapabilityState(
         selectionRevision: 0, readiness: .idle)
-    @Published private(set) var iosPreparation: IOSPreparationPresentation?
+    @Published private(set) var iosRunnerPreparation: IOSPreparationPresentation?
+    @Published private(set) var iosClipboardPreparation: IOSPreparationPresentation?
     @Published private(set) var currentScreenshotArtifact: ScreenshotArtifact?
     @Published private(set) var screenshotFeedback: String?
     @Published private(set) var isCapturingScreenshot = false
@@ -166,7 +171,8 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     private let iosPhotoDiscovery = IOSPhotoDiscovery()
     private let runner: any HostCommandRunning
     private let arguments: [String]
-    private let iosRunnerFactory: (@Sendable (URL) throws -> any IOSRunnerManaging)?
+    private let iosScreenshotRunnerFactory: (@Sendable (URL) throws -> any IOSRunnerManaging)?
+    private let iosClipboardHostFactory: (@Sendable (URL) throws -> any IOSRunnerManaging)?
     private let iosMemoryProvider: any IOSWorkspaceVMProviding
     private let usesFixtureMemory: Bool
     private var hasStarted = false
@@ -189,14 +195,19 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     private var xcrunURL: URL?
     private var androidHelperManager: AndroidHelperManager?
     private var iosRunnerManager: (any IOSRunnerManaging)?
+    private var iosClipboardManager: (any IOSRunnerManaging)?
     private let iosRunnerBuildWorkspace = IOSRunnerBuildWorkspace(
         rootDirectoryURL: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("dev.debugutility.DeviceBridge/IOSRunnerBuilds-v1", isDirectory: true),
         reuseCompletedWorkspaces: true)
     private var iosRunnerSession: ConnectionSession?
+    private var iosClipboardSession: ConnectionSession?
     private var iosRunnerHeartbeatTask: Task<Void, Never>?
-    private var iosPreparationObservationTask: Task<Void, Never>?
+    private var iosClipboardHeartbeatTask: Task<Void, Never>?
+    private var iosRunnerPreparationObservationTask: Task<Void, Never>?
+    private var iosClipboardPreparationObservationTask: Task<Void, Never>?
     private var iosRunnerCleanupTask: Task<Void, Never>?
+    private var iosClipboardCleanupTask: Task<Void, Never>?
     private var clipboardService: ClipboardService?
     private var screenshotService: ScreenshotService?
     private var fileTransferService: FileTransferService?
@@ -248,12 +259,14 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     init(
         arguments: [String] = ProcessInfo.processInfo.arguments,
         runner: any HostCommandRunning = HostCommandRunner(),
-        iosRunnerFactory: (@Sendable (URL) throws -> any IOSRunnerManaging)? = nil,
+        iosScreenshotRunnerFactory: (@Sendable (URL) throws -> any IOSRunnerManaging)? = nil,
+        iosClipboardHostFactory: (@Sendable (URL) throws -> any IOSRunnerManaging)? = nil,
         iosMemoryProvider: (any IOSWorkspaceVMProviding)? = nil
     ) {
         self.arguments = arguments
         self.runner = runner
-        self.iosRunnerFactory = iosRunnerFactory
+        self.iosScreenshotRunnerFactory = iosScreenshotRunnerFactory
+        self.iosClipboardHostFactory = iosClipboardHostFactory
         self.iosMemoryProvider = iosMemoryProvider ?? NativeIOSWorkspaceVMProvider()
         usesFixtureMemory = arguments.contains("--fixture-devices") && iosMemoryProvider == nil
         shellObservation = androidShell.objectWillChange.sink { [weak self] in
@@ -507,6 +520,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         invalidateAndroidCommands()
         deviceInformation.invalidate()
         detachIOSRunner()
+        detachIOSClipboardHost()
         invalidateIOSMemory()
         imageBrowser?.stop()
         imageBrowser = nil
@@ -694,6 +708,13 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
            }) {
             invalidateIOSRunner(reason: "The iOS device route changed. Select the device again.")
         }
+        if let session = iosClipboardSession,
+           snapshot.session != session || !snapshot.devices.contains(where: {
+               $0.identity == session.deviceIdentity && $0.preferredTransportID == session.transportID
+                   && $0.authorization != .denied
+           }) {
+            invalidateIOSClipboardHost(reason: "The iOS device route changed. Select the device again.")
+        }
         // The store always receives fresh observations. The UI does not display transport
         // timestamps, so timestamp-only scans must not invalidate every sidebar row.
         // Maintenance retains its selected record at the end of the store inventory;
@@ -755,10 +776,12 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         invalidateAndroidCommands()
         deviceInformation.invalidate()
         detachIOSRunner()
+        detachIOSClipboardHost()
         invalidateIOSMemory()
         let previousAndroidHelper = androidHelperManager
         androidHelperManager = nil
         let previousIOSCleanup = iosRunnerCleanupTask
+        let previousIOSClipboardCleanup = iosClipboardCleanupTask
         imageBrowser?.stop()
         imageBrowser = nil
         selectionRevision += 1
@@ -829,6 +852,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
             // Drain the cancelled selection's helper cleanup before starting a new helper.
             await previousSelection?.value
             await previousIOSCleanup?.value
+            await previousIOSClipboardCleanup?.value
             await previousAndroidHelper?.stop()
             await previousMaintenance?.stop()
             await previousKeepAliveController?.stop()
@@ -907,7 +931,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                           let route = device.candidates.first(where: { $0.id == session.transportID }),
                           route.kind == .usb {
                     screenshotReadiness = .availableOnDemand(
-                        "The iOS runner starts only when you capture a screenshot or use the clipboard."
+                        "The iOS screenshot runner starts only after an explicit screenshot action."
                     )
                 } else {
                     screenshotReadiness = .actionRequired(
@@ -925,7 +949,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                 } else {
                     clipboardReadiness = .availableOnDemand(
                         device.identity.platform == .iOS
-                            ? "The iOS runner starts only after an explicit clipboard or screenshot action."
+                            ? "The iOS clipboard Host starts only after an explicit clipboard action."
                             : "The Android helper opens only after an explicit clipboard action."
                     )
                 }
@@ -1034,7 +1058,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
               session.deviceIdentity == device.identity else { return nil }
         clipboardReadiness = .preparing
         if device.identity.platform == .iOS, !arguments.contains("--fixture-devices") {
-            await prepareIOSRunner(for: device, session: session, revision: revision)
+            await prepareIOSClipboardHost(for: device, session: session, revision: revision)
         } else {
             await prepareClipboard(for: device)
         }
@@ -1674,16 +1698,14 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
               let route = device.candidates.first(where: { $0.id == session.transportID }),
               route.kind == .usb, let xcrunURL else {
             screenshotReadiness = .actionRequired("iOS screenshots currently require a trusted USB connection and Xcode.")
-            clipboardReadiness = .actionRequired("iOS clipboard currently requires a trusted USB connection and Xcode.")
             return
         }
         screenshotReadiness = .preparing
-        clipboardReadiness = .preparing
-        iosPreparation = IOSPreparationPresentation()
+        iosRunnerPreparation = IOSPreparationPresentation(owner: .screenshot)
         do {
             let manager: any IOSRunnerManaging
-            if let iosRunnerFactory {
-                manager = try iosRunnerFactory(xcrunURL)
+            if let iosScreenshotRunnerFactory {
+                manager = try iosScreenshotRunnerFactory(xcrunURL)
             } else {
                 guard let resources = Bundle.main.resourceURL else {
                     throw IOSRunnerSourceConfigurationError.bundleMissing
@@ -1717,9 +1739,6 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                 return
             }
             guard await iosRunnerMatches(session, revision: revision) else { return }
-            let clipboardChannel = outcome.channel as? any IOSRunnerClipboardChannel
-            let clipboardContext = try? await clipboardChannel?.authenticatedClipboardContext()
-            guard await iosRunnerMatches(session, revision: revision) else { return }
             if let metadataChannel = outcome.channel as? any IOSRunnerDeviceInformationChannel {
                 let launchID = metadataChannel.launchID
                 informationRunnerLaunchID = launchID
@@ -1738,19 +1757,10 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
             }
             installScreenshotProvider(IOSRunnerScreenshotProvider(channel: channel, context: context,
                 transportID: session.transportID))
-            // One launch and one heartbeat own both features. Capability inspection is
-            // metadata-only; actual clipboard access starts only from an explicit action.
-            if let clipboardChannel, clipboardContext == context {
-                clipboardService = ClipboardService(store: store, channel: clipboardChannel,
-                    sessionNonce: context.sessionNonce, helperDeviceID: context.helperDeviceID)
-                clipboardReadiness = .ready
-            } else {
-                clipboardReadiness = .actionRequired("The iOS runner did not negotiate clipboard read and write. Retry iOS tools.")
-            }
             isConnectionMaintained = true
-            iosPreparationObservationTask?.cancel()
-            iosPreparationObservationTask = nil
-            iosPreparation?.finish(.ready)
+            iosRunnerPreparationObservationTask?.cancel()
+            iosRunnerPreparationObservationTask = nil
+            iosRunnerPreparation?.finish(.ready)
             lastSuccessfulCommandAt = Date()
             iosRunnerHeartbeatTask = Task { [weak self] in
                 while !Task.isCancelled {
@@ -1771,24 +1781,127 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                 ? "Set your existing Apple development Team ID in Settings, then retry iOS tools."
                 : "The bundled iOS runner sources are missing or invalid. Rebuild the Debug app and retry."
             screenshotReadiness = .actionRequired(message)
-            clipboardReadiness = .actionRequired(message)
-            let failedStage = iosPreparation?.stage ?? .building
-            iosPreparation?.finish(.failed(failedStage, message, nil))
+            let failedStage = iosRunnerPreparation?.stage ?? .building
+            iosRunnerPreparation?.finish(.failed(failedStage, message, nil))
         }
     }
 
+    private func prepareIOSClipboardHost(for device: DeviceRecord, session: ConnectionSession, revision: Int) async {
+        guard device.identity.stability == .stable,
+              let route = device.candidates.first(where: { $0.id == session.transportID }),
+              route.kind == .usb, let xcrunURL else {
+            clipboardReadiness = .actionRequired("iOS clipboard currently requires a trusted USB connection and Xcode.")
+            return
+        }
+        clipboardReadiness = .preparing
+        iosClipboardPreparation = IOSPreparationPresentation(owner: .clipboard)
+        do {
+            let manager: any IOSRunnerManaging
+            if let iosClipboardHostFactory {
+                manager = try iosClipboardHostFactory(xcrunURL)
+            } else {
+                guard let resources = Bundle.main.resourceURL else {
+                    throw IOSRunnerSourceConfigurationError.bundleMissing
+                }
+                let configuration = try IOSRunnerSourceConfiguration(
+                    helperResourcesURL: resources.appendingPathComponent("Helpers"),
+                    signingTeamID: UserDefaults.standard.string(forKey: "iosSigningTeamID"))
+                manager = IOSRunnerManager(xcodebuildURL: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
+                    projectURL: configuration.projectURL, scheme: configuration.scheme,
+                    signingTeamID: configuration.signingTeamID, runner: runner,
+                    launcher: IOSClipboardHostLauncher(xcrunURL: xcrunURL,
+                        channels: IOSClipboardHostChannelFactory(xcrunURL: xcrunURL),
+                        maximumLifetime: .seconds(3_600)),
+                    buildWorkspace: iosRunnerBuildWorkspace)
+            }
+            iosClipboardManager = manager
+            iosClipboardSession = session
+            observeIOSClipboardPreparation(manager: manager, session: session, revision: revision)
+            let outcome = await manager.prepare(deviceIdentifier: device.identity.rawValue)
+            guard await iosClipboardMatches(session, revision: revision) else {
+                await manager.stop()
+                return
+            }
+            guard let channel = outcome.channel as? any IOSRunnerClipboardChannel,
+                  let context = try? await channel.authenticatedClipboardContext(),
+                  await HelperSessionAuthenticator(channel: channel).verifyExisting(context) else {
+                guard await iosClipboardMatches(session, revision: revision) else { return }
+                invalidateIOSClipboardHost(reason: outcome.failure?.safeMessage
+                    ?? "The iOS clipboard Host did not establish an authenticated channel. Retry clipboard access.",
+                    recoveryAction: outcome.failure?.recoveryAction)
+                return
+            }
+            guard await iosClipboardMatches(session, revision: revision) else { return }
+            clipboardService = ClipboardService(store: store, channel: channel,
+                sessionNonce: context.sessionNonce, helperDeviceID: context.helperDeviceID)
+            clipboardReadiness = .ready
+            isConnectionMaintained = true
+            iosClipboardPreparationObservationTask?.cancel()
+            iosClipboardPreparationObservationTask = nil
+            iosClipboardPreparation?.finish(.ready)
+            lastSuccessfulCommandAt = Date()
+            iosClipboardHeartbeatTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(10)) } catch { return }
+                    guard let self, await self.iosClipboardMatches(session, revision: revision) else { return }
+                    let valid = await HelperSessionAuthenticator(channel: channel).verifyExisting(context)
+                    guard await self.iosClipboardMatches(session, revision: revision) else { return }
+                    guard valid else {
+                        self.invalidateIOSClipboardHost(reason: "The iOS clipboard session ended. Retry clipboard access.")
+                        return
+                    }
+                    self.lastSuccessfulCommandAt = Date()
+                }
+            }
+        } catch {
+            guard !Task.isCancelled, selectionRevision == revision else { return }
+            let message = (error as? IOSRunnerSourceConfigurationError) == .signingTeamRequired
+                ? "Set your existing Apple development Team ID in Settings, then retry clipboard access."
+                : "The bundled iOS clipboard Host is missing or invalid. Rebuild the app and retry."
+            clipboardReadiness = .actionRequired(message)
+            let failedStage = iosClipboardPreparation?.stage ?? .building
+            iosClipboardPreparation?.finish(.failed(failedStage, message, nil))
+        }
+    }
+
+    private func observeIOSClipboardPreparation(manager: any IOSRunnerManaging,
+                                                session: ConnectionSession, revision: Int) {
+        iosClipboardPreparationObservationTask?.cancel()
+        let presentationID = iosClipboardPreparation?.id
+        iosClipboardPreparationObservationTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let state = await manager.preparationState()
+                guard let self, await self.iosClipboardMatches(session, revision: revision),
+                      self.iosClipboardPreparation?.id == presentationID,
+                      self.iosClipboardPreparation?.isPreparing == true else { return }
+                switch state {
+                case .building: self.iosClipboardPreparation?.state = .preparing(.building)
+                case .starting: self.iosClipboardPreparation?.state = .preparing(.starting)
+                default: break
+                }
+                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            }
+        }
+    }
+
+    private func iosClipboardMatches(_ session: ConnectionSession, revision: Int) async -> Bool {
+        let current = await store.snapshot().session
+        return !Task.isCancelled && selectionRevision == revision
+            && iosClipboardSession == session && current == session
+    }
+
     private func observeIOSPreparation(manager: any IOSRunnerManaging, session: ConnectionSession, revision: Int) {
-        iosPreparationObservationTask?.cancel()
-        let presentationID = iosPreparation?.id
-        iosPreparationObservationTask = Task { [weak self] in
+        iosRunnerPreparationObservationTask?.cancel()
+        let presentationID = iosRunnerPreparation?.id
+        iosRunnerPreparationObservationTask = Task { [weak self] in
             while !Task.isCancelled {
                 let state = await manager.preparationState()
                 guard let self, await self.iosRunnerMatches(session, revision: revision),
-                      self.iosPreparation?.id == presentationID,
-                      self.iosPreparation?.isPreparing == true else { return }
+                      self.iosRunnerPreparation?.id == presentationID,
+                      self.iosRunnerPreparation?.isPreparing == true else { return }
                 switch state {
-                case .building: self.iosPreparation?.state = .preparing(.building)
-                case .starting: self.iosPreparation?.state = .preparing(.starting)
+                case .building: self.iosRunnerPreparation?.state = .preparing(.building)
+                case .starting: self.iosRunnerPreparation?.state = .preparing(.starting)
                 default: break // Only the authenticated Workspace binding may finish the display.
                 }
                 do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
@@ -1811,9 +1924,9 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
             deviceInformation.cancel()
             bindDeviceInformation(device: device, session: session)
         }
-        iosPreparationObservationTask?.cancel()
-        iosPreparationObservationTask = nil
-        iosPreparation = nil
+        iosRunnerPreparationObservationTask?.cancel()
+        iosRunnerPreparationObservationTask = nil
+        iosRunnerPreparation = nil
         iosRunnerHeartbeatTask?.cancel()
         iosRunnerHeartbeatTask = nil
         iosRunnerSession = nil
@@ -1827,11 +1940,44 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     }
 
     private func invalidateIOSRunner(reason: String, recoveryAction: String? = nil) {
-        var presentation = iosPreparation
+        var presentation = iosRunnerPreparation
         let failedStage = presentation?.stage ?? .starting
         detachIOSRunner()
         presentation?.finish(.failed(failedStage, reason, recoveryAction))
-        iosPreparation = presentation
+        iosRunnerPreparation = presentation
+        screenshotOperationTask?.cancel()
+        screenshotOperationTask = nil
+        let previous = screenshotService
+        screenshotService = nil
+        screenshotReadiness = .actionRequired(reason)
+        currentScreenshotArtifact = nil
+        isCapturingScreenshot = false
+        isConnectionMaintained = iosClipboardManager != nil
+        Task { await previous?.clearSessionArtifacts() }
+    }
+
+    private func detachIOSClipboardHost() {
+        iosClipboardPreparationObservationTask?.cancel()
+        iosClipboardPreparationObservationTask = nil
+        iosClipboardPreparation = nil
+        iosClipboardHeartbeatTask?.cancel()
+        iosClipboardHeartbeatTask = nil
+        iosClipboardSession = nil
+        guard let manager = iosClipboardManager else { return }
+        iosClipboardManager = nil
+        let previous = iosClipboardCleanupTask
+        iosClipboardCleanupTask = Task {
+            await previous?.value
+            await manager.stop()
+        }
+    }
+
+    private func invalidateIOSClipboardHost(reason: String, recoveryAction: String? = nil) {
+        var presentation = iosClipboardPreparation
+        let failedStage = presentation?.stage ?? .starting
+        detachIOSClipboardHost()
+        presentation?.finish(.failed(failedStage, reason, recoveryAction))
+        iosClipboardPreparation = presentation
         clipboardOperationTask?.cancel()
         clipboardOperationTask = nil
         clipboardService = nil
@@ -1841,37 +1987,53 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         clipboardFeedback = nil
         clipboardRecoveryAction = nil
         clipboardExportGeneration += 1
-        screenshotOperationTask?.cancel()
-        screenshotOperationTask = nil
-        let previous = screenshotService
-        screenshotService = nil
-        screenshotReadiness = .actionRequired(reason)
-        currentScreenshotArtifact = nil
-        isCapturingScreenshot = false
-        isConnectionMaintained = false
-        Task { await previous?.clearSessionArtifacts() }
+        isConnectionMaintained = iosRunnerManager != nil
     }
 
-    var canStopIOSRunner: Bool { iosRunnerManager != nil }
-
-    var canReconnectIOSRunner: Bool {
-        selectedDevice?.identity.platform == .iOS && !isSelecting
-            && iosPreparation?.isPreparing != true && !isTransferringFile && !isMonitoringMemory
+    var iosPreparations: [IOSPreparationPresentation] {
+        [iosClipboardPreparation, iosRunnerPreparation].compactMap { $0 }
     }
 
-    func reconnectIOSRunner() {
-        guard canReconnectIOSRunner, let device = selectedDevice else { return }
+    var canStopIOSRunner: Bool { iosRunnerManager != nil || iosClipboardManager != nil }
+
+    func canStopIOSPreparation(_ owner: IOSPreparationPresentation.Owner) -> Bool {
+        switch owner {
+        case .clipboard: iosClipboardManager != nil
+        case .screenshot: iosRunnerManager != nil
+        }
+    }
+
+    func canReconnectIOSPreparation(_ owner: IOSPreparationPresentation.Owner) -> Bool {
+        let preparation = owner == .clipboard ? iosClipboardPreparation : iosRunnerPreparation
+        return selectedDevice?.identity.platform == .iOS && !isSelecting
+            && preparation?.isPreparing != true && !isTransferringFile && !isMonitoringMemory
+    }
+
+    func reconnectIOSPreparation(_ owner: IOSPreparationPresentation.Owner) {
+        guard canReconnectIOSPreparation(owner), let device = selectedDevice else { return }
         let revision = selectionRevision
-        screenshotOperationTask?.cancel()
-        screenshotReadiness = .preparing
-        clipboardReadiness = .preparing
-        screenshotOperationTask = Task { [weak self] in
+        let retryClipboard = owner == .clipboard
+        if retryClipboard {
+            clipboardOperationTask?.cancel()
+            clipboardReadiness = .preparing
+        } else {
+            screenshotOperationTask?.cancel()
+            screenshotReadiness = .preparing
+        }
+        let task = Task { [weak self] in
             guard let self, let session = await self.store.snapshot().session,
                   session.deviceIdentity == device.identity else { return }
-            await self.prepareIOSRunner(for: device, session: session, revision: revision)
+            if retryClipboard {
+                await self.prepareIOSClipboardHost(for: device, session: session, revision: revision)
+            } else {
+                await self.prepareIOSRunner(for: device, session: session, revision: revision)
+            }
             guard self.selectionRevision == revision else { return }
-            self.screenshotOperationTask = nil
+            if retryClipboard { self.clipboardOperationTask = nil }
+            else { self.screenshotOperationTask = nil }
         }
+        if retryClipboard { clipboardOperationTask = task }
+        else { screenshotOperationTask = task }
     }
 
     func stopIOSRunner() {
@@ -1880,8 +2042,20 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
             selectionTask?.cancel()
             isSelecting = false
         }
-        invalidateIOSRunner(reason: "The iOS runner is stopped. Retry iOS tools to resume clipboard and screenshots.")
-        iosPreparation?.finish(.stopped)
+        if iosRunnerManager != nil { stopIOSPreparation(.screenshot) }
+        if iosClipboardManager != nil { stopIOSPreparation(.clipboard) }
+    }
+
+    func stopIOSPreparation(_ owner: IOSPreparationPresentation.Owner) {
+        guard canStopIOSPreparation(owner) else { return }
+        switch owner {
+        case .clipboard:
+            invalidateIOSClipboardHost(reason: "The iOS clipboard Host is stopped. Retry clipboard access to resume.")
+            iosClipboardPreparation?.finish(.stopped)
+        case .screenshot:
+            invalidateIOSRunner(reason: "The iOS screenshot runner is stopped. Retry screenshot access to resume.")
+            iosRunnerPreparation?.finish(.stopped)
+        }
     }
 
     private func prepareClipboard(for device: DeviceRecord, resuming context: HelperSessionContext? = nil) async {
@@ -2146,11 +2320,11 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         switch outcome {
         case let .snapshot(snapshot):
             clipboardText = snapshot.text
-            clipboardFeedback = foregroundDisposition == .runnerRemainsForeground
-                ? "Read · The iOS helper remains foreground; return to your app when ready." : "Read"
+            clipboardFeedback = foregroundDisposition == .clipboardHostRemainsForeground
+                ? "Read · The iOS clipboard host remains foreground; return to your app when ready." : "Read"
         case .written:
-            clipboardFeedback = foregroundDisposition == .runnerRemainsForeground
-                ? "Sent · The iOS helper remains foreground; return to your app when ready." : "Sent"
+            clipboardFeedback = foregroundDisposition == .clipboardHostRemainsForeground
+                ? "Sent · The iOS clipboard host remains foreground; return to your app when ready." : "Sent"
         case let .failure(failure):
             clipboardFeedback = failure.safeMessage
             clipboardRecoveryAction = failure.recoveryAction

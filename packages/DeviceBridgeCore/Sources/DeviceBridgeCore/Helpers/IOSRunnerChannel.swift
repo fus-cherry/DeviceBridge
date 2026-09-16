@@ -20,7 +20,6 @@ public actor IOSRunnerChannel: IOSRunnerChannelCandidate, HelperRequestSending, 
     private let identity: EphemeralTLSIdentity
     private let endpoint: any IOSRunnerEndpointOpening
     private let helperBuild: String
-    private let foreground: (any IOSRunnerForegroundActivating)?
     private enum Phase {
         case idle, opening
         case connected(IOSRunnerIdentityHandshake.Session)
@@ -33,7 +32,7 @@ public actor IOSRunnerChannel: IOSRunnerChannelCandidate, HelperRequestSending, 
     private var stream: PinnedTLSFrameStream?
     private var opening: Task<Void, any Error>?
     private var runnerProcess: (any IOSRunnerProcessOwning)?
-    private enum RequestStage { case preparing, queued, writing, awaitingReply, receivingScreenshot }
+    private enum RequestStage { case queued, writing, awaitingReply, receivingScreenshot }
     private struct Response: Sendable {
         let result: HelperResult
         var screenshot: ScreenshotCapturePayload?
@@ -44,7 +43,6 @@ public actor IOSRunnerChannel: IOSRunnerChannelCandidate, HelperRequestSending, 
         let continuation: CheckedContinuation<Response, any Error>
         var stage = RequestStage.queued
         var expiry: Task<Void, Never>?
-        var preparation: Task<Void, Never>?
         var screenshotResult: HelperResult?
         var screenshotReceipt: IOSRunnerScreenshotReceipt?
         var discardedScreenshotOffset: Int?
@@ -62,9 +60,8 @@ public actor IOSRunnerChannel: IOSRunnerChannelCandidate, HelperRequestSending, 
     private var reader: Task<Void, Never>?
 
     init(launch: IOSRunnerLaunch, identity: EphemeralTLSIdentity, endpoint: any IOSRunnerEndpointOpening,
-         helperBuild: String, foreground: (any IOSRunnerForegroundActivating)? = nil) {
+         helperBuild: String) {
         self.launch = launch; self.identity = identity; self.endpoint = endpoint; self.helperBuild = helperBuild
-        self.foreground = foreground
         publicHostCertificateDER = identity.certificateDER
     }
 
@@ -166,18 +163,15 @@ public actor IOSRunnerChannel: IOSRunnerChannelCandidate, HelperRequestSending, 
                         // These requests never reached the peer. Their obsolete timers must not
                         // shorten an independent Stop deadline or close its acknowledgement.
                         let unsent = pending.values.filter {
-                            $0.request.requestID != request.requestID && ($0.stage == .preparing || $0.stage == .queued)
+                            $0.request.requestID != request.requestID && $0.stage == .queued
                         }
                         for waiting in unsent {
                             pending.removeValue(forKey: waiting.request.requestID)
-                            waiting.expiry?.cancel(); waiting.preparation?.cancel()
+                            waiting.expiry?.cancel()
                             writeQueue.removeAll { $0 == waiting.request.requestID }
                             waiting.continuation.resume(throwing: Failure.unavailable)
                         }
                         writeQueue.insert(request.requestID, at: 0)
-                    } else if foreground != nil, request.action == .clipboardRead || request.action == .clipboardWrite {
-                        entry.stage = .preparing
-                        entry.preparation = Task { [weak self] in await self?.prepareContent(request.requestID) }
                     } else { writeQueue.append(request.requestID) }
                     startWriter()
                 }
@@ -206,7 +200,7 @@ public actor IOSRunnerChannel: IOSRunnerChannelCandidate, HelperRequestSending, 
         pending.removeAll(); writeQueue.removeAll()
         var completionFailure = failure
         for entry in requests {
-            entry.expiry?.cancel(); entry.preparation?.cancel()
+            entry.expiry?.cancel()
             do { try entry.screenshotReceipt?.discard() }
             catch { completionFailure = .cleanupFailed }
         }
@@ -251,57 +245,6 @@ public actor IOSRunnerChannel: IOSRunnerChannelCandidate, HelperRequestSending, 
     private func startWriter() {
         guard writer == nil else { return }
         writer = Task { [weak self] in await self?.writeRequests() }
-    }
-
-    /// Foreground activation is a separate public OS boundary. It may return after cancellation;
-    /// only this actor can commit that candidate result to the outgoing queue.
-    private func prepareContent(_ id: UUID) async {
-        guard let entry = pending[id], let foreground, let process = runnerProcess else { return }
-        do {
-            try requirePreparing(entry)
-            guard await process.exitStatus() == nil else { throw Failure.unavailable }
-            try requirePreparing(entry)
-            let activated: Bool
-            do {
-                try await foreground.activate(launch: launch, deadline: entry.deadline)
-                activated = true
-            } catch let failure as IOSRunnerForegroundActivator.Failure
-                where failure == .activationFailed || failure == .timedOut {
-                activated = false
-            }
-            try requirePreparing(entry)
-            guard await process.exitStatus() == nil else { throw Failure.unavailable }
-            try requirePreparing(entry)
-            if !activated {
-                // This content request never reached the phone. Release only its reservation;
-                // the authenticated transport and screenshot/heartbeat remain independently valid.
-                // Expiry, cancellation, Stop and a dead runner still take the terminal path above.
-                pending.removeValue(forKey: id)
-                entry.expiry?.cancel()
-                entry.preparation = nil
-                entry.continuation.resume(returning: Response(result: HelperResult(requestID: id,
-                    status: .actionRequired, completedAt: Date(),
-                    error: HelperErrorPayload(code: "clipboard.foreground_required",
-                        message: "Keep the managed runner visible to access the clipboard."))))
-                return
-            }
-            entry.preparation = nil
-            entry.stage = .queued
-            writeQueue.append(id)
-            startWriter()
-        } catch {
-            // Stop/close has already invalidated this work; late activation must not close a
-            // Stop acknowledgement or publish a fresh request into an obsolete session.
-            guard case .connected = phase, pending[id] === entry else { return }
-            await shutdown(failure: .unavailable)
-        }
-    }
-
-    private func requirePreparing(_ entry: PendingRequest) throws {
-        try Task.checkCancellation()
-        guard case .connected = phase, pending[entry.request.requestID] === entry,
-              entry.stage == .preparing else { throw Failure.unavailable }
-        _ = try remaining(until: entry.deadline)
     }
 
     private func writeRequests() async {
@@ -471,13 +414,22 @@ public actor IOSRunnerChannel: IOSRunnerChannelCandidate, HelperRequestSending, 
             guard result.status == .success, result.payload == expected else { throw Failure.invalidReply }
         case .clipboardRead:
             if result.status == .success {
-                guard let payload = result.payload, Set(payload.keys) == ["text"],
+                guard let payload = result.payload,
+                      Set(payload.keys) == ["text"] || Set(payload.keys) == ["text", "foregroundDisposition"],
                       let text = payload["text"]?.stringValue,
+                      payload["foregroundDisposition"] == nil
+                        || payload["foregroundDisposition"]?.stringValue == "clipboardHostRemainsForeground",
                       text.utf8.count <= HelperWireCodec.maximumClipboardUTF8Bytes else { throw Failure.invalidReply }
             }
         case .clipboardWrite:
             if result.status == .success {
-                guard result.payload == ["written": .bool(true)] else { throw Failure.invalidReply }
+                guard let payload = result.payload,
+                      Set(payload.keys) == ["written"] || Set(payload.keys) == ["written", "foregroundDisposition"],
+                      payload["written"]?.boolValue == true,
+                      payload["foregroundDisposition"] == nil
+                        || payload["foregroundDisposition"]?.stringValue == "clipboardHostRemainsForeground" else {
+                    throw Failure.invalidReply
+                }
             }
         case .deviceInformation:
             if result.status == .success {

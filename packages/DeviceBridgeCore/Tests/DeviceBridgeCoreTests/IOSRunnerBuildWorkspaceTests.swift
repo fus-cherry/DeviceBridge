@@ -241,7 +241,7 @@ private actor BuildWorkspaceRunner: HostCommandRunning {
         if paths.count == 1 { await gate?.enter() }
         let products = URL(fileURLWithPath: path).appendingPathComponent("Build/Products")
         let fm = FileManager.default
-        for name in ["DeviceBridgeRunnerUITests-Runner.app", "DeviceBridgeHost.app"] {
+        for name in ["DeviceBridgeRunnerUITests-Runner.app", "DeviceBridgeHost.app", "DeviceBridgeClipboardHost.app"] {
             let app = products.appendingPathComponent("Debug-iphoneos/" + name)
             try fm.createDirectory(at: app, withIntermediateDirectories: true)
             try Data(String(paths.count).utf8).write(to: app.appendingPathComponent("binary"))

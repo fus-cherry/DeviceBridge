@@ -35,6 +35,7 @@ struct IOSRunnerTestConfigurationTests {
         #expect(result.runnerApplicationURL == products.productsDirectoryURL.appendingPathComponent("Debug-iphoneos/DeviceBridgeRunnerUITests-Runner.app"))
         #expect(result.testBundleURL == result.runnerApplicationURL.appendingPathComponent("PlugIns/DeviceBridgeRunnerUITests.xctest"))
         #expect(result.targetApplicationURL == products.productsDirectoryURL.appendingPathComponent("Debug-iphoneos/DeviceBridgeHost.app"))
+        #expect(result.clipboardApplicationURL == products.productsDirectoryURL.appendingPathComponent("Debug-iphoneos/DeviceBridgeClipboardHost.app"))
         let rewritten = try #require(PropertyListSerialization.propertyList(from: result.configurationData, format: nil) as? [String: Any])
         let target = try #require(rewritten["DeviceBridgeRunnerUITests"] as? [String: Any])
         #expect(target["SystemAttachmentLifetime"] as? String == "keepNever")

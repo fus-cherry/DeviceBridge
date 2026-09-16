@@ -80,7 +80,7 @@ public enum ClipboardOperationOutcome: Sendable, Equatable {
 }
 
 public enum ClipboardForegroundDisposition: String, Sendable, Equatable {
-    case runnerRemainsForeground
+    case clipboardHostRemainsForeground
 }
 
 public actor ClipboardService {

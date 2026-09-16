@@ -16,6 +16,25 @@ Earlier possibly-empty READ runs remain protocol/lease evidence only. Current ev
 `validation/us2-clipboard.md` and `validation/us3-screenshot.md`; historical experiment decisions follow.
 Requirements: FR-003/005/009/011/024/031/033/035; SC-004/005/012/014/015/017.
 
+## Architecture correction — 2026-09-16
+
+The shared screenshot/clipboard process described in the historical sections below is superseded.
+The production design has two independent selected-USB channels:
+
+- `dev.debugutility.DeviceBridgeHost` is an otherwise empty UI-test target. Its XCUITest Runner owns
+  screenshots and device information on device port 49872 and remains in the background.
+- `dev.debugutility.DeviceBridgeClipboardHost` is an ordinary app that owns clipboard read/write on
+  device port 49873. It is launched or activated only by an explicit clipboard operation.
+- Each channel has its own manager, preparation presentation, heartbeat task, invalidation and cleanup.
+  One cannot publish, clear or overwrite the other's readiness.
+- The four signed artifacts (Runner app, nested XCTest bundle, screenshot Host and clipboard Host) are
+  resolved from one immutable build snapshot and verified against their distinct bundle identifiers.
+
+Physical iPhone 12 evidence confirms exact clipboard round trips, background screenshot capture while
+a representative business app remains foreground, independent failure presentation, and bounded Stop.
+Locked/protected screens and wireless transport remain open. No automatic application restoration is
+claimed.
+
 ## Evidence and Transport Decision
 
 Installed `xcrun devicectl device --help` exposes copy, info, install, notification, orientation,

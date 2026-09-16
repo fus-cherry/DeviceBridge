@@ -125,9 +125,11 @@ state.
 
 **Decision**: Mobile helpers are implementation components managed by the Mac application, not apps
 that users install separately. Android uses a small native Kotlin APK. iOS uses a minimal signed
-XCUITest runner for screenshot and clipboard operations that require an on-device process. The Mac
-application detects versions, installs or updates compatible builds, starts them when allowed, and
-surfaces any unavoidable trust, Developer Mode, signing, foreground, or permission action.
+XCUITest runner for background screenshot operations and a separately signed ordinary foreground Host
+for clipboard operations. The two iOS apps have independent bundle identifiers, USB ports, managers,
+states and heartbeats. The Mac application detects versions, installs or updates compatible builds,
+starts them only from the explicit capability action, and surfaces any unavoidable trust, Developer
+Mode, signing, foreground, or permission action.
 
 **Rationale**: Reliable clipboard access and Android Wi-Fi radio keep-alive require an on-device
 process. iOS programmable screenshots of other apps require the UI-testing boundary. Hiding helper

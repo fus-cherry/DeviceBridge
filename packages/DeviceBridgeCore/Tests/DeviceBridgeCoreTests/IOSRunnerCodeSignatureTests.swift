@@ -23,6 +23,7 @@ struct IOSRunnerCodeSignatureTests {
             (.runner, "Debug-iphoneos/DeviceBridgeRunnerUITests-Runner.app"),
             (.tests, "Debug-iphoneos/DeviceBridgeRunnerUITests-Runner.app/PlugIns/DeviceBridgeRunnerUITests.xctest"),
             (.host, "Debug-iphoneos/DeviceBridgeHost.app"),
+            (.clipboardHost, "Debug-iphoneos/DeviceBridgeClipboardHost.app"),
         ]
         for (role, relative) in paths {
             let url = root.appendingPathComponent(relative)
@@ -78,7 +79,8 @@ struct IOSRunnerCodeSignatureTests {
         let destination = products.productsDirectoryURL.appendingPathComponent("Debug-iphoneos")
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporary) }
-        for name in ["DeviceBridgeRunnerUITests-Runner.app", "DeviceBridgeHost.app"] {
+        for name in ["DeviceBridgeRunnerUITests-Runner.app", "DeviceBridgeHost.app",
+                     "DeviceBridgeClipboardHost.app"] {
             try FileManager.default.copyItem(at: original.appendingPathComponent("Debug-iphoneos/" + name),
                 to: destination.appendingPathComponent(name))
         }
@@ -118,7 +120,8 @@ struct IOSRunnerCodeSignatureTests {
         let destination = products.productsDirectoryURL.appendingPathComponent("Debug-iphoneos")
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporary) }
-        for name in ["DeviceBridgeRunnerUITests-Runner.app", "DeviceBridgeHost.app"] {
+        for name in ["DeviceBridgeRunnerUITests-Runner.app", "DeviceBridgeHost.app",
+                     "DeviceBridgeClipboardHost.app"] {
             try FileManager.default.copyItem(at: original.appendingPathComponent("Debug-iphoneos/" + name),
                 to: destination.appendingPathComponent(name))
         }

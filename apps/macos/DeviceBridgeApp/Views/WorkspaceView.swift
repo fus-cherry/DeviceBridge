@@ -2,7 +2,7 @@ import AppKit
 import DeviceBridgeCore
 import SwiftUI
 
-/// The shared runner's actual stages, without speculative percentages or readiness shortcuts.
+/// One capability owner's actual stages, without speculative percentages or readiness shortcuts.
 struct IOSPreparationView: View {
     let preparation: IOSPreparationPresentation
     let canCancel: Bool
@@ -66,7 +66,7 @@ struct IOSPreparationView: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(statusColor.opacity(0.22), lineWidth: 1)
             .accessibilityHidden(true))
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("ios-preparation")
+        .accessibilityIdentifier("ios-preparation-\(preparation.owner.rawValue)")
     }
 
     @ViewBuilder private var steps: some View {
@@ -93,18 +93,28 @@ struct IOSPreparationView: View {
     }
 
     private var title: String {
-        switch preparation.state {
-        case .preparing: "Preparing iOS tools"
-        case .ready: "iOS helper connected"
-        case .failed: "iOS preparation needs attention"
-        case .stopped: "iOS helper stopped"
+        switch (preparation.owner, preparation.state) {
+        case (.clipboard, .preparing): "Preparing iOS clipboard Host"
+        case (.clipboard, .ready): "iOS clipboard Host connected"
+        case (.clipboard, .failed): "iOS clipboard Host needs attention"
+        case (.clipboard, .stopped): "iOS clipboard Host stopped"
+        case (.screenshot, .preparing): "Preparing iOS screenshot runner"
+        case (.screenshot, .ready): "iOS screenshot runner connected"
+        case (.screenshot, .failed): "iOS screenshot runner needs attention"
+        case (.screenshot, .stopped): "iOS screenshot runner stopped"
         }
     }
     private var detail: String {
         switch preparation.state {
-        case .preparing: "Clipboard and screenshots share this connection and wait for the same preparation."
+        case .preparing:
+            preparation.owner == .clipboard
+                ? "The clipboard Host starts only for this explicit clipboard action."
+                : "The screenshot runner starts only for this explicit capture."
         case let .failed(_, message, _): message
-        case .stopped: "Retry iOS tools without reconnecting the device session."
+        case .stopped:
+            preparation.owner == .clipboard
+                ? "Retry clipboard access without reconnecting the device session."
+                : "Retry screenshot access without reconnecting the device session."
         case .ready: "Ready"
         }
     }
@@ -351,11 +361,12 @@ struct WorkspaceView: View {
                     }
                 }
 
-                if let preparation = model.iosPreparation {
+                ForEach(model.iosPreparations, id: \.id) { preparation in
                     IOSPreparationView(preparation: preparation,
-                        canCancel: model.canStopIOSRunner,
-                        canReconnect: model.canReconnectIOSRunner,
-                        cancel: model.stopIOSRunner, reconnect: model.reconnectIOSRunner)
+                        canCancel: model.canStopIOSPreparation(preparation.owner),
+                        canReconnect: model.canReconnectIOSPreparation(preparation.owner),
+                        cancel: { model.stopIOSPreparation(preparation.owner) },
+                        reconnect: { model.reconnectIOSPreparation(preparation.owner) })
                 }
 
                 // A GroupBox around these module controls triggers the Computer Use AX-tree trap.

@@ -14,7 +14,7 @@ struct IOSRunnerWorkspaceChecks {
         let channel = WorkspacePhoneChannel()
         let manager = WorkspacePhoneManager(channel: channel)
         let inventory = WorkspacePhoneInventory()
-        let model = WorkspaceViewModel(arguments: [], runner: inventory, iosRunnerFactory: { _ in manager })
+        let model = WorkspaceViewModel(arguments: [], runner: inventory, iosScreenshotRunnerFactory: { _ in manager })
         defer { model.stop() }
         model.start()
         try await wait { !model.isRefreshing && model.devices.count == 1 }
@@ -27,7 +27,8 @@ struct IOSRunnerWorkspaceChecks {
         model.requestScreenshotCapture()
         try await wait { !model.isCapturingScreenshot && model.currentScreenshotArtifact != nil }
         try require(model.isScreenshotReady, "qualified screenshot must be usable independently of clipboard")
-        try require(!model.isClipboardReady, "unqualified clipboard must remain unavailable")
+        try require(model.clipboardReadinessText == "Available on demand",
+            "screenshot qualification must leave clipboard independently available on demand")
         try require(await manager.device == "workspace-test-udid", "launch must use stable UDID, not CoreDevice route ID")
         let artifact = try model.currentScreenshotArtifact.unwrap("explicit capture did not publish an artifact")
         try require(try Data(contentsOf: artifact.sessionURL) == WorkspacePhoneChannel.png,
@@ -48,14 +49,18 @@ struct IOSRunnerWorkspaceChecks {
 
         let routeChannel = WorkspacePhoneChannel(clipboardAvailable: true)
         let routeManager = WorkspacePhoneManager(channel: routeChannel)
+        let routeClipboardManager = WorkspacePhoneManager(channel: routeChannel)
         let routeInventory = WorkspacePhoneInventory()
-        let routeModel = WorkspaceViewModel(arguments: [], runner: routeInventory, iosRunnerFactory: { _ in routeManager })
+        let routeModel = WorkspaceViewModel(arguments: [], runner: routeInventory,
+            iosScreenshotRunnerFactory: { _ in routeManager },
+            iosClipboardHostFactory: { _ in routeClipboardManager })
         defer { routeModel.stop() }
         routeModel.start()
         try await wait { !routeModel.isRefreshing && routeModel.devices.count == 1 }
         routeModel.select(routeModel.devices[0].identity)
         try await wait { !routeModel.isSelecting }
-        routeModel.reconnectIOSRunner()
+        routeModel.reconnectIOSPreparation(.screenshot)
+        routeModel.reconnectIOSPreparation(.clipboard)
         try await wait { routeModel.isScreenshotReady && routeModel.clipboardReadiness == .ready }
         try require(routeModel.isClipboardReady, "route check must start with a qualified clipboard")
         await routeInventory.changeRoute()
@@ -67,13 +72,17 @@ struct IOSRunnerWorkspaceChecks {
 
         let failedChannel = WorkspacePhoneChannel(clipboardAvailable: true)
         let failedManager = WorkspacePhoneManager(channel: failedChannel)
-        let failedModel = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(), iosRunnerFactory: { _ in failedManager })
+        let failedClipboardManager = WorkspacePhoneManager(channel: failedChannel)
+        let failedModel = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(),
+            iosScreenshotRunnerFactory: { _ in failedManager },
+            iosClipboardHostFactory: { _ in failedClipboardManager })
         defer { failedModel.stop() }
         failedModel.start()
         try await wait { !failedModel.isRefreshing && failedModel.devices.count == 1 }
         failedModel.select(failedModel.devices[0].identity)
         try await wait { !failedModel.isSelecting }
-        failedModel.reconnectIOSRunner()
+        failedModel.reconnectIOSPreparation(.screenshot)
+        failedModel.reconnectIOSPreparation(.clipboard)
         try await wait { failedModel.isScreenshotReady && failedModel.clipboardReadiness == .ready }
         await failedChannel.failNextClipboard(.permissionDenied)
         failedModel.requestClipboardRead()
@@ -92,15 +101,16 @@ struct IOSRunnerWorkspaceChecks {
     @MainActor
     static func informationBindingLoss() async throws {
         let channel = WorkspacePhoneChannel(clipboardAvailable: true)
-        let manager = WorkspacePhoneManager(channel: channel)
-        let model = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(), iosRunnerFactory: { _ in manager })
+        let screenshotManager = WorkspacePhoneManager(channel: channel)
+        let model = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(),
+            iosScreenshotRunnerFactory: { _ in screenshotManager })
         defer { model.stop() }
         model.start()
         try await wait { !model.isRefreshing && model.devices.count == 1 }
         model.select(model.devices[0].identity)
         try await wait { !model.isSelecting }
-        try require(await manager.device == nil, "selection must keep the runner dormant")
-        model.reconnectIOSRunner()
+        try require(await screenshotManager.device == nil, "selection must keep the runner dormant")
+        model.reconnectIOSPreparation(.screenshot)
         try await wait { model.screenshotReadiness == .ready && model.deviceInformation.canRead }
         try require(model.deviceInformation.report == nil, "selection must not automatically collect parameters")
         model.deviceInformation.read()
@@ -114,7 +124,9 @@ struct IOSRunnerWorkspaceChecks {
         try await wait { await channel.hasPendingInformation }
         model.deviceInformation.cancel()
         await channel.loseInformationBinding()
-        try await wait { !model.isScreenshotReady && !model.isClipboardReady }
+        try await wait { !model.isScreenshotReady }
+        try require(model.clipboardReadinessText == "Available on demand",
+            "screenshot binding loss must not invalidate the independent clipboard owner")
         try require(await channel.hasPendingInformation, "fixture must retain cleanup while readiness is withdrawn")
         await channel.releaseInformation()
         try await wait { !model.deviceInformation.isBusy }
@@ -128,7 +140,7 @@ struct IOSRunnerWorkspaceChecks {
     @MainActor
     static func preparationPresentation() async throws {
         let manager = WorkspacePreparingManager()
-        let model = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(), iosRunnerFactory: { _ in manager })
+        let model = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(), iosScreenshotRunnerFactory: { _ in manager })
         defer { model.stop() }
         model.start()
         try await wait { !model.isRefreshing && model.devices.count == 1 }
@@ -139,26 +151,29 @@ struct IOSRunnerWorkspaceChecks {
         model.requestScreenshotCapture()
         try await wait { await manager.entered }
         try require(model.screenshotReadinessText == "Preparing…", "normal iOS preparation must not be shown as Action required")
-        try require(model.clipboardReadinessText == "Preparing…", "shared clipboard preparation must agree with screenshot")
-        try require(!model.isScreenshotReady && !model.isClipboardReady, "progress must not grant content readiness")
-        try require(model.isFileTransferReady, "shared helper preparation must preserve independent file access")
-        try require(model.iosPreparation?.state == .preparing(.building), "shared progress must begin in the build stage")
+        try require(model.clipboardReadiness == .availableOnDemand(
+            "The iOS clipboard Host starts only after an explicit clipboard action."),
+            "screenshot preparation must not mutate clipboard lifecycle state")
+        try require(!model.isScreenshotReady && !model.isClipboardReady,
+            "the current screenshot action must temporarily exclude a clipboard content action")
+        try require(model.isFileTransferReady, "screenshot preparation must preserve independent file access")
+        try require(model.iosRunnerPreparation?.state == .preparing(.building), "screenshot progress must begin in the build stage")
         await manager.setPreparationState(.starting)
-        try await wait { model.iosPreparation?.state == .preparing(.starting) }
+        try await wait { model.iosRunnerPreparation?.state == .preparing(.starting) }
         await manager.holdNextObservation()
         try await wait { await manager.observationHeld }
         model.stopIOSRunner()
-        try require(model.iosPreparation?.state == .stopped, "Stop must immediately end visible preparation")
+        try require(model.iosRunnerPreparation?.state == .stopped, "Stop must immediately end visible preparation")
         await manager.releaseObservation()
         await manager.release()
         try await wait { await manager.stops > 0 }
         try await Task.sleep(for: .milliseconds(300))
-        try require(!model.isScreenshotReady && !model.isClipboardReady, "late preparation after Stop cannot grant readiness")
-        try require(model.iosPreparation?.state == .stopped, "late progress observation must not undo Stop")
-        try require(model.iosPreparation?.finishedAt != nil, "stopped progress must freeze elapsed time")
+        try require(!model.isScreenshotReady && model.isClipboardReady, "late screenshot preparation after Stop cannot grant screenshot readiness or revoke clipboard admission")
+        try require(model.iosRunnerPreparation?.state == .stopped, "late progress observation must not undo Stop")
+        try require(model.iosRunnerPreparation?.finishedAt != nil, "stopped progress must freeze elapsed time")
 
         let next = WorkspacePreparingManager()
-        let success = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(), iosRunnerFactory: { _ in next })
+        let success = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(), iosScreenshotRunnerFactory: { _ in next })
         defer { success.stop() }
         success.start()
         try await wait { !success.isRefreshing && success.devices.count == 1 }
@@ -168,25 +183,29 @@ struct IOSRunnerWorkspaceChecks {
         try await wait { await next.entered }
         await next.setPreparationState(.connected)
         try await Task.sleep(for: .milliseconds(300))
-        try require(success.iosPreparation?.isPreparing == true, "manager connected observation must not finish before authenticated binding")
+        try require(success.iosRunnerPreparation?.isPreparing == true, "manager connected observation must not finish before authenticated binding")
         await next.release()
-        try await wait { success.isClipboardReady && success.isScreenshotReady }
-        try require(success.iosPreparation?.state == .ready && success.iosPreparation?.finishedAt != nil,
-            "authenticated binding must finish shared progress")
+        try await wait { success.isScreenshotReady }
+        try require(success.iosRunnerPreparation?.state == .ready && success.iosRunnerPreparation?.finishedAt != nil,
+            "authenticated binding must finish screenshot progress")
         print("PASS: true preparation stages, no premature readiness, frozen completion, cancellation and stale observer rejection")
     }
 
     @MainActor
     static func overlappingContentActions() async throws {
         let channel = WorkspacePhoneChannel(clipboardAvailable: true)
-        let manager = WorkspacePhoneManager(channel: channel)
-        let model = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(), iosRunnerFactory: { _ in manager })
+        let screenshotManager = WorkspacePhoneManager(channel: channel)
+        let clipboardManager = WorkspacePhoneManager(channel: channel)
+        let model = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(),
+            iosScreenshotRunnerFactory: { _ in screenshotManager },
+            iosClipboardHostFactory: { _ in clipboardManager })
         defer { model.stop() }
         model.start()
         try await wait { !model.isRefreshing && model.devices.count == 1 }
         model.select(model.devices[0].identity)
         try await wait { !model.isSelecting }
-        model.reconnectIOSRunner()
+        model.reconnectIOSPreparation(.screenshot)
+        model.reconnectIOSPreparation(.clipboard)
         try await wait { model.screenshotReadiness == .ready && model.clipboardReadiness == .ready }
         await channel.holdRead()
         model.requestClipboardRead()
@@ -205,7 +224,7 @@ struct IOSRunnerWorkspaceChecks {
         await channel.releaseCapture()
         try await wait { !model.isCapturingScreenshot }
         try require(await channel.contentRequests == 2, "overlapping content must be rejected before reaching the channel")
-        print("PASS: iOS clipboard and screenshot actions share one admission gate without blocking metadata")
+        print("PASS: iOS clipboard and screenshot use independent admission gates without blocking metadata")
     }
 
     @MainActor
@@ -214,7 +233,7 @@ struct IOSRunnerWorkspaceChecks {
         let manager = WorkspacePhoneManager(channel: channel)
         let wireless = WorkspaceViewModel(arguments: [],
             runner: WorkspacePhoneInventory(transportType: "network"),
-            iosRunnerFactory: { _ in manager })
+            iosScreenshotRunnerFactory: { _ in manager })
         defer { wireless.stop() }
         wireless.start()
         try await wait { !wireless.isRefreshing && wireless.devices.count == 1 }
@@ -234,7 +253,7 @@ struct IOSRunnerWorkspaceChecks {
         for failure in [IOSRunnerSourceConfigurationError.signingTeamRequired,
                         .bundleMissing, .invalidManifest, .sourcesMissing, .unsafePath] {
             let model = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(),
-                iosRunnerFactory: { _ in throw failure })
+                iosScreenshotRunnerFactory: { _ in throw failure })
             defer { model.stop() }
             model.start()
             try await wait { !model.isRefreshing && model.devices.count == 1 }
@@ -246,13 +265,13 @@ struct IOSRunnerWorkspaceChecks {
                 ? "Set your existing Apple development Team ID in Settings, then retry iOS tools."
                 : "The bundled iOS runner sources are missing or invalid. Rebuild the Debug app and retry."
             try require(model.screenshotReadiness == .actionRequired(expected)
-                && model.clipboardReadiness == .actionRequired(expected),
-                "first-use preparation failure must publish classified recovery advice")
-            try require(!model.isScreenshotReady && !model.isClipboardReady,
-                "failed preparation must not publish content readiness")
+                && model.clipboardReadinessText == "Available on demand",
+                "screenshot preparation failure must not overwrite clipboard readiness")
+            try require(!model.isScreenshotReady && model.isClipboardReady,
+                "failed screenshot preparation must not publish screenshot readiness or revoke clipboard admission")
             try require(model.isFileTransferReady,
                 "runner configuration failure must preserve independent file readiness")
-            if case .failed = model.iosPreparation?.state { }
+            if case .failed = model.iosRunnerPreparation?.state { }
             else { throw Failure.failed("configuration failure must terminate the visible progress") }
         }
         print("PASS: unsupported Wi-Fi rejects USB runner launch/content; five first-use configuration failures preserve recovery advice and independent files")
@@ -262,7 +281,8 @@ struct IOSRunnerWorkspaceChecks {
     static func clipboardBinding() async throws {
         let channel = WorkspacePhoneChannel(clipboardAvailable: true)
         let manager = WorkspacePhoneManager(channel: channel)
-        let model = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(), iosRunnerFactory: { _ in manager })
+        let model = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(),
+            iosClipboardHostFactory: { _ in manager })
         defer { model.stop() }
         model.start()
         try await wait { !model.isRefreshing && model.devices.count == 1 }
@@ -270,9 +290,11 @@ struct IOSRunnerWorkspaceChecks {
         try await wait { !model.isSelecting }
         try require(await manager.device == nil, "selection must not prepare the runner")
         try require(await channel.contentRequests == 0, "selection must not access clipboard content")
-        model.reconnectIOSRunner()
-        try await wait { model.screenshotReadiness == .ready }
-        try require(model.isClipboardReady, "negotiated clipboard must be enabled on the selected authenticated USB session")
+        model.reconnectIOSPreparation(.clipboard)
+        try await wait { model.clipboardReadiness == .ready }
+        try require(model.isClipboardReady, "authenticated clipboard Host must enable the selected USB session")
+        try require(model.screenshotReadinessText == "Available on demand",
+            "clipboard preparation must not mutate screenshot readiness")
         try require(await channel.contentRequests == 0, "preparation must not access clipboard content")
         for (status, expectedRecovery) in [
             (HelperResultStatus.permissionDenied, "Review the device clipboard privacy prompt, then retry."),

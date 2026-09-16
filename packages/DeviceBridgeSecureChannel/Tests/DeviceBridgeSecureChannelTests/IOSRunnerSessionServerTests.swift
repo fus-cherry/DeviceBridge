@@ -446,7 +446,7 @@ extension IOSRunnerSessionServerTests {
         } catch { await running.cancel(); throw error }
     }
 
-    @Test("malformed clipboard handler results close the channel before publication", arguments: ["id", "version", "expired", "future", "beforeRequest", "textType", "oversize", "extra", "errorWithPayload", "writeEcho"])
+    @Test("malformed clipboard handler results close the channel before publication", arguments: ["id", "version", "expired", "future", "beforeRequest", "textType", "oversize", "extra", "disposition", "errorWithPayload", "writeEcho"])
     func malformedClipboardResults(mutation: String) async throws {
         let handler = ClipboardResultFixture { request in
             let write = request.action == .clipboardWrite
@@ -455,6 +455,7 @@ extension IOSRunnerSessionServerTests {
             case "textType": payload = ["text": .number(1)]
             case "oversize": payload = ["text": .string(String(repeating: "é", count: 524_289))]
             case "extra", "writeEcho": payload["extra"] = .string("must-not-publish")
+            case "disposition": payload["foregroundDisposition"] = .string("unknown")
             default: break
             }
             let completedAt: Date
@@ -499,13 +500,22 @@ extension IOSRunnerSessionServerTests {
 
     @Test("accepted host clock skew does not reject a fresh local clipboard result")
     func clipboardHostClockSkew() async throws {
-        let running = try await RunningSession.start(clipboardHandler: GatedClipboardHandler(released: true))
+        let handler = ClipboardResultFixture { request in
+            HelperResult(requestID: request.requestID, status: .success, completedAt: Date(), payload: [
+                "text": .string("public-clipboard-fixture"),
+                "foregroundDisposition": .string("clipboardHostRemainsForeground"),
+            ])
+        }
+        let running = try await RunningSession.start(clipboardHandler: handler)
         do {
             var request = running.request(.clipboardRead)
             request.createdAt = Date().addingTimeInterval(10)
             request.expiresAt = Date().addingTimeInterval(15)
             let result = try await running.send(request)
-            #expect(result.status == .success && result.payload == ["text": .string("public-clipboard-fixture")])
+            #expect(result.status == .success && result.payload == [
+                "text": .string("public-clipboard-fixture"),
+                "foregroundDisposition": .string("clipboardHostRemainsForeground"),
+            ])
             _ = try await running.send(running.request(.stop))
             #expect(try await running.task.value == .stopped)
             await running.host.close()
