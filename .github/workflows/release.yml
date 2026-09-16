@@ -64,7 +64,7 @@ jobs:
       - name: Test secure channel
         run: swift test --package-path packages/DeviceBridgeSecureChannel --no-parallel
       - name: Test device core
-        run: swift test --package-path packages/DeviceBridgeCore --no-parallel
+        run: swift test --package-path packages/DeviceBridgeCore --no-parallel -j 1
       - name: Check packaging contracts
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Check workspace state flows
