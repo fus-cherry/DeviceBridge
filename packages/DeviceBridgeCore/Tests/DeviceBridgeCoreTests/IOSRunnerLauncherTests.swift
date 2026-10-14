@@ -142,16 +142,26 @@ struct IOSRunnerLauncherTests {
     @Test(arguments: [false, true])
     func blockedValidationDoesNotBlockTimeoutOrCancellation(cancel: Bool) async throws {
         let gate = LauncherGate()
-        let c = try LauncherContext(artifactGate: gate, startupTimeout: .milliseconds(40))
+        // Cancellation must win on its own, not be rescued by the short timeout.
+        let c = try LauncherContext(artifactGate: gate,
+            startupTimeout: cancel ? .seconds(30) : .milliseconds(40))
         defer { c.removeFixtures() }
         let completion = LauncherCompletion()
         let start = Task {
             do { _ = try await c.start(); await completion.finish(false) }
-            catch { await completion.finish(true) }
+            catch {
+                #expect((error is CancellationError) == cancel)
+                await completion.finish(true)
+            }
         }
         await gate.entered()
         if cancel { start.cancel() }
-        try await Task.sleep(for: .milliseconds(150))
+        // Observe completion, not a particular executor scheduling slot. Keep validation
+        // blocked throughout this bounded wait so a launcher that awaits it still fails.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await completion.failed == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(await completion.failed == true)
         #expect(c.processes.requests.isEmpty)
         await gate.release()
