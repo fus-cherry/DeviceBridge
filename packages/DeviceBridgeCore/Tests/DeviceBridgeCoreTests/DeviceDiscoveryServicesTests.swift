@@ -4,10 +4,13 @@ import Testing
 
 @Suite("Device discovery services")
 struct DeviceDiscoveryServicesTests {
-    @Test("Android discovery invokes ADB inventory without a shell")
+    @Test("Android discovery verifies identity without starting a mobile app")
     func androidDiscovery() async throws {
-        let runner = RecordingCommandRunner { _ in
-            HostCommandResult(
+        let runner = RecordingCommandRunner { request in
+            if request.arguments.last == "ro.serialno" {
+                return HostCommandResult(exitCode: 0, standardOutput: Data("PHONE-123\n".utf8), standardError: Data())
+            }
+            return HostCommandResult(
                 exitCode: 0,
                 standardOutput: Data("List of devices attached\nserial device usb:1-1 model:Pixel_9 transport_id:7\n".utf8),
                 standardError: Data()
@@ -22,9 +25,50 @@ struct DeviceDiscoveryServicesTests {
         let requests = await runner.requests
 
         #expect(devices.map(\.id) == ["7"])
-        #expect(requests.count == 1)
+        #expect(requests.count == 2)
+        #expect(devices[0].identity.stability == .stable)
+        #expect(devices[0].metadata["hardwareSerial"] == "PHONE-123")
+        #expect(requests[1].arguments == ["-t", "7", "shell", "getprop", "ro.serialno"])
         #expect(requests[0].executableURL.path == "/sdk/platform-tools/adb")
         #expect(requests[0].arguments == ["devices", "-l"])
+    }
+
+    @Test("USB and wireless routes merge only after hardware identity agrees")
+    func mergesVerifiedRoutes() async throws {
+        let runner = RecordingCommandRunner { request in
+            let output = request.arguments == ["devices", "-l"] ? """
+            USB-SERIAL device usb:1-1 model:Phone transport_id:1
+            adb-phone (3)._adb-tls-connect._tcp device model:Phone transport_id:2
+            192.168.1.2:5555 device model:Phone transport_id:3
+            192.168.1.3:5555 device model:Phone transport_id:4
+            """ : (request.arguments[1] == "4" ? "unknown\n" : "PHONE-123\n")
+            return HostCommandResult(exitCode: 0, standardOutput: Data(output.utf8), standardError: Data())
+        }
+        let candidates = try await AndroidDeviceDiscoveryService(adbURL: URL(fileURLWithPath: "/adb"), runner: runner).discover(observedAt: Date())
+        let devices = DeviceInventory.aggregate(candidates)
+        #expect(devices.count == 2)
+        let merged = try #require(devices.first { $0.identity.stability == .stable })
+        #expect(merged.candidates.count == 3)
+        #expect(merged.preferredTransportID == "1")
+    }
+
+    @Test("a serial-less emulator merges aliases only for the verified kernel boot")
+    func emulatorIdentity() async throws {
+        let boot = "824e061b-c117-4b3f-a40c-39a91c8e34e2"
+        let runner = RecordingCommandRunner { request in
+            let output: String
+            if request.arguments == ["devices", "-l"] {
+                output = "127.0.0.1:16384 device transport_id:1\nlocalhost:16384 device transport_id:2\n"
+            } else if request.arguments.last == "ro.serialno" { output = "\n" }
+            else { output = boot + "\n" }
+            return HostCommandResult(exitCode: 0, standardOutput: Data(output.utf8), standardError: Data())
+        }
+        let candidates = try await AndroidDeviceDiscoveryService(adbURL: URL(fileURLWithPath: "/adb"), runner: runner).discover(observedAt: Date())
+        let records = DeviceInventory.aggregate(candidates)
+        #expect(records.count == 1)
+        #expect(records[0].identity.rawValue == "android:boot:\(boot)")
+        #expect(records[0].identity.stability == .provisional)
+        #expect(records[0].candidates.count == 2)
     }
 
     @Test("iOS discovery consumes only the devicectl JSON result file")

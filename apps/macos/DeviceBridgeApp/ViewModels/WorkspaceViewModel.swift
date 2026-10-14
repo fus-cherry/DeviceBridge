@@ -452,7 +452,9 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     }
 
     var canStartAndroidKeepAlive: Bool {
-        guard androidKeepAliveController != nil else { return false }
+        guard let device = selectedDevice, device.identity.platform == .android,
+              device.candidates.contains(where: { $0.id == device.preferredTransportID && $0.kind == .wifi }),
+              connectionHealth == .healthy || connectionHealth == .recovered else { return false }
         if case .starting = androidKeepAliveState { return false }
         return !isAndroidKeepAliveActive
     }
@@ -754,20 +756,21 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     func repairIOSConnection(identity: DeviceIdentity, expectedRevision: Int) {
         guard iosConnectionRepairRevision == expectedRevision,
               deviceSelection?.device.identity == identity else { return }
-        select(identity, restartingIOSService: true)
+        select(identity, intent: .restartIOSService)
     }
 
-    func select(_ identity: DeviceIdentity, resuming context: HelperSessionContext? = nil) {
-        select(identity, resuming: context, restartingIOSService: false)
+    private enum SelectionIntent { case user, verifiedRecovery, restartIOSService }
+
+    func select(_ identity: DeviceIdentity) {
+        select(identity, intent: .user)
     }
 
-    private func select(_ identity: DeviceIdentity, resuming context: HelperSessionContext? = nil,
-                        restartingIOSService: Bool) {
+    private func select(_ identity: DeviceIdentity, intent: SelectionIntent) {
         guard let candidate = devices.first(where: { $0.identity == identity }) else {
             diagnostics.append("The selected device is no longer available.")
             return
         }
-        if context == nil, !restartingIOSService, !isSelecting,
+        if intent == .user, !isSelecting,
            selectedDeviceIdentity == identity,
            connectionHealth == .healthy || connectionHealth == .recovered {
             return
@@ -796,7 +799,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         isConnectionMaintained = false
         helperContext = nil
         connectionHealth = .starting
-        if context == nil { connectionRecoveryCount = 0 }
+        if intent != .verifiedRecovery { connectionRecoveryCount = 0 }
         let previousScreenshotService = screenshotService
         let previousMemoryMonitor = memoryMonitor
         let previousVMDiscovery = flutterVMDiscovery
@@ -877,7 +880,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                     self.diagnostics.append("The selected device is no longer available.")
                     return
                 }
-                if restartingIOSService {
+                if intent == .restartIOSService {
                     do {
                         try await IOSDeviceServiceRecovery(runner: self.runner).restart()
                     } catch {
@@ -950,7 +953,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                     clipboardReadiness = .availableOnDemand(
                         device.identity.platform == .iOS
                             ? "The iOS clipboard Host starts only after an explicit clipboard action."
-                            : "The Android helper opens only after an explicit clipboard action."
+                            : "Read and write Android clipboard text without leaving the current app."
                     )
                 }
                 guard !Task.isCancelled, selectionRevision == revision else { return }
@@ -1059,8 +1062,26 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         clipboardReadiness = .preparing
         if device.identity.platform == .iOS, !arguments.contains("--fixture-devices") {
             await prepareIOSClipboardHost(for: device, session: session, revision: revision)
+        } else if device.identity.platform == .android, !arguments.contains("--fixture-devices") {
+            guard let adbURL, let artifact = Self.androidHelperArtifact() else {
+                clipboardReadiness = .actionRequired("Build or embed the Android helper APK, then retry the device.")
+                return nil
+            }
+            do {
+                let channel = try AndroidClipboardChannel(adbURL: adbURL, transportID: session.transportID,
+                    identity: device.identity, apkURL: artifact.url, expectedVersionCode: artifact.versionCode, runner: runner)
+                try await channel.prepare()
+                guard !Task.isCancelled, selectionRevision == revision,
+                      await store.snapshot().session == session else { return nil }
+                clipboardService = ClipboardService(store: store, channel: channel,
+                    sessionNonce: UUID().uuidString, helperDeviceID: device.identity.rawValue)
+                clipboardReadiness = .ready
+            } catch {
+                guard !Task.isCancelled, selectionRevision == revision else { return nil }
+                clipboardReadiness = .actionRequired("Background clipboard preparation failed. Unlock and authorize the Android device, then retry.")
+            }
         } else {
-            await prepareClipboard(for: device)
+            await finishClipboardPreparation(channel: FixtureHelperChannel())
         }
         guard !Task.isCancelled, selectionRevision == revision else { return nil }
         return clipboardService
@@ -1242,16 +1263,22 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     }
 
     func startAndroidConnectionMaintenance() {
-        guard let controller = androidKeepAliveController, let manager = androidHelperManager,
-              let transportID = selectedDevice?.preferredTransportID,
+        guard let device = selectedDevice, let transportID = device.preferredTransportID,
               canStartAndroidKeepAlive else { return }
+        let revision = selectionRevision
         keepAliveActionTask?.cancel()
         keepAliveObservationTask?.cancel()
         keepAliveObservationTask = nil
         androidKeepAliveState = .starting
         keepAliveActionTask = Task { [weak self] in
+            guard let self else { return }
+            if self.androidKeepAliveController == nil {
+                await self.prepareAndroidMaintenance(for: device, revision: revision)
+            }
+            guard !Task.isCancelled, self.selectionRevision == revision,
+                  let controller = self.androidKeepAliveController, let manager = self.androidHelperManager else { return }
             guard await manager.requestKeepAliveNotificationPermission(transportID: transportID) else {
-                guard let self, self.androidKeepAliveController === controller else { return }
+                guard self.androidKeepAliveController === controller else { return }
                 self.androidKeepAliveState = .failed(OperationFailure(code: .failure,
                     safeMessage: "The Android notification permission screen could not be opened.",
                     recoveryAction: "Unlock the device and retry Wi-Fi maintenance."))
@@ -1259,7 +1286,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                 return
             }
             let outcome = await controller.start()
-            guard !Task.isCancelled, let self,
+            guard !Task.isCancelled,
                   self.androidKeepAliveController === controller else {
                 await controller.stop()
                 return
@@ -2058,30 +2085,14 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         }
     }
 
-    private func prepareClipboard(for device: DeviceRecord, resuming context: HelperSessionContext? = nil) async {
-        clipboardReadiness = .preparing
-        let previousManager = androidHelperManager
-        androidHelperManager = nil
-        if context != nil { await previousManager?.detach() }
-        else { await previousManager?.stop() }
-        guard !Task.isCancelled else { return }
-
-        if arguments.contains("--fixture-devices") {
-            let channel = FixtureHelperChannel()
-            await finishClipboardPreparation(channel: channel)
-            return
-        }
-
-        guard device.identity.platform == .android else {
-            clipboardReadiness = .preparing
-            return
-        }
+    /// The foreground helper is used only for the explicit Wi-Fi maintenance action.
+    /// Clipboard has no dependency on this manager, channel or notification permission.
+    private func prepareAndroidMaintenance(for device: DeviceRecord, revision: Int) async {
         guard let adbURL,
               let transportID = device.preferredTransportID,
               let artifact = Self.androidHelperArtifact() else {
-            clipboardReadiness = .actionRequired(
-                "Build or embed the Android helper APK, then retry the device."
-            )
+            androidKeepAliveState = .failed(OperationFailure(code: .helperMissing,
+                safeMessage: "Build or embed the Android helper APK, then retry the device."))
             return
         }
 
@@ -2091,62 +2102,39 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
             expectedVersionCode: artifact.versionCode,
             runner: runner
         )
-        let outcome = if context != nil {
-            await manager.reattach(transportID: transportID)
-        } else {
-            await manager.prepare(transportID: transportID)
-        }
-        guard !Task.isCancelled else {
-            if context != nil { await manager.detach() }
-            else { await manager.stop() }
+        let outcome = await manager.prepare(transportID: transportID)
+        guard !Task.isCancelled, selectionRevision == revision else {
+            await manager.stop()
             return
         }
         guard let connection = outcome.connection else {
-            clipboardReadiness = .actionRequired(
-                outcome.failure?.safeMessage ?? "The Android helper is not ready."
-            )
+            androidKeepAliveState = .failed(outcome.failure ?? OperationFailure(code: .helperMissing,
+                safeMessage: "The Android helper is not ready."))
             return
         }
 
         do {
             let channel = try TCPHelperChannel(hostPort: connection.hostPort)
-            let prepared: HelperSessionContext?
-            if let context {
-                prepared = await HelperSessionAuthenticator(channel: channel).verifyExisting(context) ? context : nil
-            } else {
-                prepared = await authenticate(channel: channel)
-            }
-            guard !Task.isCancelled else {
-                if context != nil { await manager.detach() }
-                else { await manager.stop() }
+            let prepared = await authenticate(channel: channel)
+            guard !Task.isCancelled, selectionRevision == revision else {
+                await manager.stop()
                 return
             }
             guard let prepared else {
-                if context != nil { await manager.detach() }
-                else { await manager.stop() }
-                clipboardReadiness = .actionRequired(
-                    "Open the Device Bridge helper on the Android device, then select the device again."
-                )
+                await manager.stop()
+                androidKeepAliveState = .failed(OperationFailure(code: .helperMissing,
+                    safeMessage: "The Android helper did not complete its handshake."))
                 return
             }
             androidHelperManager = manager
             helperContext = prepared
-            clipboardService = ClipboardService(
-                store: store,
-                channel: channel,
-                sessionNonce: prepared.sessionNonce,
-                helperDeviceID: prepared.helperDeviceID
-            )
-            clipboardReadiness = .ready
-            await prepareAndroidKeepAlive(
-                for: device,
-                channel: channel,
-                context: prepared
-            )
+            androidKeepAliveController = AndroidKeepAliveController(store: store, channel: channel,
+                sessionNonce: prepared.sessionNonce, helperDeviceID: prepared.helperDeviceID)
         } catch {
-            if context != nil { await manager.detach() }
-            else { await manager.stop() }
-            clipboardReadiness = .actionRequired("The Android helper channel could not be opened.")
+            await manager.stop()
+            guard !Task.isCancelled, selectionRevision == revision else { return }
+            androidKeepAliveState = .failed(OperationFailure(code: .helperMissing,
+                safeMessage: "The Android helper channel could not be opened."))
         }
     }
 
@@ -2207,8 +2195,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                     guard !Task.isCancelled, self.selectionRevision == revision,
                           state.session == update.session else { return }
                     self.publishInventory(state)
-                    let context = self.helperContext
-                    self.select(update.session.deviceIdentity, resuming: context)
+                    self.select(update.session.deviceIdentity, intent: .verifiedRecovery)
                     self.connectionRecoveryCount += 1
                     return
                 }
@@ -2249,36 +2236,6 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         connectionHealth = .stopped
         stopAndroidConnectionMaintenance()
         Task { await controller?.stop() }
-    }
-
-    private func prepareAndroidKeepAlive(
-        for device: DeviceRecord,
-        channel: any HelperRequestSending,
-        context: HelperSessionContext
-    ) async {
-        guard let transportID = device.preferredTransportID,
-              let transport = device.candidates.first(where: { $0.id == transportID }),
-              transport.kind == .wifi else {
-            androidKeepAliveState = .idle
-            return
-        }
-
-        let controller = AndroidKeepAliveController(
-            store: store,
-            channel: channel,
-            sessionNonce: context.sessionNonce,
-            helperDeviceID: context.helperDeviceID
-        )
-        androidKeepAliveController = controller
-        androidKeepAliveState = .starting
-        let outcome = await controller.start()
-        guard !Task.isCancelled, androidKeepAliveController === controller else {
-            await controller.stop()
-            return
-        }
-        androidKeepAliveState = await controller.state
-        guard outcome.lease != nil else { return }
-        observeKeepAlive(controller)
     }
 
     private func observeKeepAlive(_ controller: AndroidKeepAliveController) {

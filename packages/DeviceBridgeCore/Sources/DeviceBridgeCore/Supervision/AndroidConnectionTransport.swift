@@ -30,6 +30,9 @@ public actor AndroidConnectionTransport: ConnectionMaintenanceTransport {
     }
 
     public func probe(_ candidate: TransportCandidate) async throws -> Bool {
+        if selectedCandidate.metadata["verifiedAndroidIdentity"] != nil || selectedCandidate.metadata["hardwareSerial"] != nil {
+            return try await verifyIdentity(candidate)
+        }
         if context != nil { return try await verifyIdentity(candidate) }
         return try await commandReady(candidate)
     }
@@ -48,9 +51,8 @@ public actor AndroidConnectionTransport: ConnectionMaintenanceTransport {
     }
 
     public func discover() async throws -> [TransportCandidate] {
-        let result = try await run(["devices", "-l"])
-        guard result.exitCode == 0 else { throw AndroidRecoveryError.commandFailed }
-        let candidates = try ADBDeviceParser().parse(result.standardOutputString, observedAt: Date())
+        let candidates = try await AndroidDeviceDiscoveryService(adbURL: adbURL, runner: runner)
+            .discover(observedAt: Date())
         if knownServiceName == nil, selectedCandidate.kind == .wifi {
             _ = try? await recoveryEndpoints(for: selectedCandidate)
         }
@@ -69,10 +71,11 @@ public actor AndroidConnectionTransport: ConnectionMaintenanceTransport {
         }
         let services = result.standardOutputString.split(whereSeparator: \.isNewline).compactMap { line -> (String, String)? in
             let fields = line.split(whereSeparator: \.isWhitespace).map(String.init)
-            guard fields.count == 3,
-                  ["_adb-tls-connect._tcp", "_adb-tls-connect._tcp."].contains(fields[1]),
-                  Self.isLocalEndpoint(fields[2]) else { return nil }
-            return (fields[0], fields[2])
+            guard fields.count >= 3,
+                  ["_adb-tls-connect._tcp", "_adb-tls-connect._tcp."].contains(fields[fields.count - 2]),
+                  let endpoint = fields.last, Self.isLocalEndpoint(endpoint),
+                  let suffix = line.range(of: fields[fields.count - 2], options: .backwards) else { return nil }
+            return (line[..<suffix.lowerBound].trimmingCharacters(in: .whitespaces), endpoint)
         }
         if knownServiceName == nil {
             knownServiceName = services.first { $0.1 == selectedCandidate.endpoint }?.0
@@ -95,6 +98,16 @@ public actor AndroidConnectionTransport: ConnectionMaintenanceTransport {
     }
 
     public func verifyIdentity(_ candidate: TransportCandidate) async throws -> Bool {
+        if let expected = selectedCandidate.metadata["verifiedAndroidIdentity"], candidate.source == .adb {
+            let actual = try await AndroidDeviceIdentityResolver(adbURL: adbURL, runner: runner)
+                .identity(transportID: candidate.id)
+            return actual?.rawValue == expected
+        }
+        if let expected = selectedCandidate.metadata["hardwareSerial"], candidate.source == .adb {
+            let actual = try await AndroidDeviceIdentityResolver(adbURL: adbURL, runner: runner)
+                .serial(transportID: candidate.id)
+            return actual == expected
+        }
         guard let context, candidate.source == .adb,
               candidate.status == .candidate || candidate.status == .available else { return false }
         guard try await commandReady(candidate) else { return false }

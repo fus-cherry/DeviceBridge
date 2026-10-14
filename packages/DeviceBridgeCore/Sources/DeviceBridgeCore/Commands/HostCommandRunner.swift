@@ -7,19 +7,22 @@ public struct HostCommandRequest: Sendable {
     public let environment: [String: String]?
     public let timeout: Duration
     public let maximumOutputBytes: Int
+    public let standardInput: Data?
 
     public init(
         executableURL: URL,
         arguments: [String] = [],
         environment: [String: String]? = nil,
         timeout: Duration,
-        maximumOutputBytes: Int = 1_048_576
+        maximumOutputBytes: Int = 1_048_576,
+        standardInput: Data? = nil
     ) {
         self.executableURL = executableURL
         self.arguments = arguments
         self.environment = environment
         self.timeout = timeout
         self.maximumOutputBytes = maximumOutputBytes
+        self.standardInput = standardInput
     }
 }
 
@@ -71,6 +74,30 @@ public struct HostCommandRunner: HostCommandRunning {
         process.environment = request.environment
         process.standardOutput = standardOutputPipe
         process.standardError = standardErrorPipe
+        // A seekable, immediately unlinked input avoids pipe backpressure deadlocks and keeps
+        // clipboard text out of argv, shell quoting and named request files. The child owns its
+        // descriptor until exit; cancellation uses the same process owner as all other commands.
+        let inputHandle: FileHandle?
+        if let input = request.standardInput {
+            var path = Array(FileManager.default.temporaryDirectory.appendingPathComponent("devicebridge-stdin.XXXXXX").path.utf8CString)
+            let descriptor = mkstemp(&path)
+            guard descriptor >= 0 else { throw HostCommandError.launchFailed }
+            unlink(path)
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+            do {
+                try handle.write(contentsOf: input)
+                try handle.seek(toOffset: 0)
+            } catch {
+                try? handle.close()
+                throw HostCommandError.launchFailed
+            }
+            inputHandle = handle
+            process.standardInput = handle
+        } else {
+            inputHandle = nil
+            process.standardInput = FileHandle.nullDevice
+        }
+        defer { try? inputHandle?.close() }
 
         // Register exit observation before launch: a short-lived command can exit before
         // its first async waiter is scheduled.

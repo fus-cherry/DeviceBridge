@@ -136,7 +136,7 @@ public actor ClipboardService {
             return .failure(OperationFailure(
                 code: .failure,
                 safeMessage: "Clipboard helper communication failed.",
-                recoveryAction: "Restart the managed helper and retry."
+                recoveryAction: "Check the device connection and retry. If the problem persists, select another device and return."
             ))
         }
 
@@ -191,7 +191,7 @@ public actor ClipboardService {
             return .failure(OperationFailure(
                 code: .failure,
                 safeMessage: "Clipboard helper communication failed.",
-                recoveryAction: "Restart the managed helper and retry."
+                recoveryAction: "Check the device connection and retry. If the problem persists, select another device and return."
             ))
         }
 
@@ -278,11 +278,11 @@ public actor ClipboardService {
         case .invalid:
             code = .malformedOutput
             safeMessage = "The clipboard helper returned an invalid response."
-            recoveryAction = "Restart the managed helper and retry."
+            recoveryAction = "Check the device connection and retry. If the problem persists, select another device and return."
         case .failure, .success:
             code = .failure
             safeMessage = "The clipboard action failed."
-            recoveryAction = "Restart the managed helper and retry."
+            recoveryAction = "Check the device connection and retry. If the problem persists, select another device and return."
         }
         return .failure(OperationFailure(
             code: code,
@@ -295,7 +295,7 @@ public actor ClipboardService {
         .failure(OperationFailure(
             code: .malformedOutput,
             safeMessage: "The clipboard helper returned an invalid response.",
-            recoveryAction: "Restart the managed helper and retry."
+            recoveryAction: "Check the device connection and retry. If the problem persists, select another device and return."
         ))
     }
 

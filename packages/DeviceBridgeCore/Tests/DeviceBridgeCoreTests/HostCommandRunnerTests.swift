@@ -7,6 +7,15 @@ import Darwin
 struct HostCommandRunnerTests {
     private let runner = HostCommandRunner()
 
+    @Test("large binary stdin round trips without pipe deadlock or shell interpretation")
+    func binaryInput() async throws {
+        let input = Data((0..<1_048_576).map { UInt8($0 % 256) })
+        let result = try await runner.run(HostCommandRequest(executableURL: URL(fileURLWithPath: "/bin/cat"),
+            timeout: .seconds(5), maximumOutputBytes: input.count, standardInput: input))
+        #expect(result.exitCode == 0)
+        #expect(result.standardOutput == input)
+    }
+
     @Test("output quota stops a still-running writer before its timeout")
     func streamingOutputLimit() async {
         // Use a native endless writer: interpreter startup is unrelated to the quota.

@@ -476,7 +476,7 @@ struct WorkspaceView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(language.text(model.isConnectionMaintained
-                     ? "Connection checks run every 5 seconds while idle. Recovery verifies the existing helper identity before resuming tools."
+                     ? "Connection checks run every 5 seconds while idle. Recovery verifies the device identity before resuming tools."
                      : "Automatic connection maintenance is paused. Select the device to resume."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -505,7 +505,11 @@ struct WorkspaceView: View {
               let candidate = device.candidates.first(where: { $0.id == id }) else {
             return language.text("Unavailable")
         }
-        return candidate.kind == .usb ? "USB" : "Wi-Fi"
+        let active = candidate.kind == .usb ? "USB" : "Wi-Fi"
+        let hasAlternative = device.candidates.contains {
+            $0.kind != candidate.kind && ($0.status == .available || $0.status == .candidate)
+        }
+        return hasAlternative ? active + " · " + language.text(candidate.kind == .usb ? "Wi-Fi available" : "USB available") : active
     }
 
     private func platformLabel(_ platform: DevicePlatform) -> String {

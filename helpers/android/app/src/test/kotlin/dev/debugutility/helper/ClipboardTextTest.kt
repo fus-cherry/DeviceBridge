@@ -3,20 +3,8 @@ package dev.debugutility.helper
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
-import java.util.concurrent.Callable
-import java.util.concurrent.FutureTask
 
 class ClipboardTextTest {
-    @Test
-    fun `main thread task preserves typed clipboard failures for safe mapping`() {
-        val oversized = FutureTask(Callable<String> { throw ClipboardText.TooLarge() })
-        oversized.run()
-        assertThrows(ClipboardText.TooLarge::class.java) { clipboardTaskResult(oversized) }
-        val denied = FutureTask(Callable<String> { throw SecurityException() })
-        denied.run()
-        assertThrows(SecurityException::class.java) { clipboardTaskResult(denied) }
-    }
-
     @Test
     fun `current text items are joined in order and retain empty items`() {
         assertEquals("first\n\n设备 📋\nlast", ClipboardText.join(sequenceOf("first", null, "", "设备 📋", "last")))

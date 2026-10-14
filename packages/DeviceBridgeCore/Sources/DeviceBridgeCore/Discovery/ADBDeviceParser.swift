@@ -17,12 +17,19 @@ public struct ADBDeviceParser: Sendable {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty, !line.hasPrefix("List of devices attached") else { continue }
 
-            let fields = line.split(whereSeparator: \.isWhitespace).map(String.init)
-            guard fields.count >= 2 else { throw DeviceParseError.malformedInventory }
-
-            let serial = fields[0]
-            let state = fields[1]
-            let metadataFields = fields.dropFirst(2)
+            // adb pads the serial, but does not escape spaces inside mDNS instance names.
+            // Match the state before the metadata suffix, not the second whitespace token.
+            let row = try NSRegularExpression(pattern: #"^(.+?)\s+(\S+)\s+((?:[A-Za-z_]+:\S+\s*)+)$"#)
+            guard let match = row.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                  let serialRange = Range(match.range(at: 1), in: line),
+                  let stateRange = Range(match.range(at: 2), in: line),
+                  let metadataRange = Range(match.range(at: 3), in: line) else {
+                throw DeviceParseError.missingTransportID
+            }
+            let fields = line[metadataRange].split(whereSeparator: \.isWhitespace).map(String.init)
+            let serial = String(line[serialRange])
+            let state = String(line[stateRange])
+            let metadataFields = fields[...]
             var metadata: [String: String] = [:]
             for field in metadataFields {
                 guard let separator = field.firstIndex(of: ":") else { continue }

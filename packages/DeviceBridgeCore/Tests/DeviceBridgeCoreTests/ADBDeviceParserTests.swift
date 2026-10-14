@@ -6,6 +6,20 @@ import Testing
 struct ADBDeviceParserTests {
     private let observedAt = Date(timeIntervalSince1970: 1_000)
 
+    @Test("preserves whitespace in an Android wireless service serial")
+    func spacedWirelessSerial() throws {
+        let serial = "adb-3B66420179800000-55EnEK (3)._adb-tls-connect._tcp"
+        for state in ["device", "offline", "unauthorized"] {
+            let devices = try ADBDeviceParser().parse(
+                "\(serial)\t\(state) product:PLD110 model:PLD110 device:OP5E01L1 transport_id:1\n",
+                observedAt: observedAt)
+            #expect(devices.count == 1)
+            #expect(devices[0].metadata["adbSerial"] == serial)
+            #expect(devices[0].id == "1")
+            #expect(devices[0].status == (state == "device" ? .candidate : state == "offline" ? .offline : .unauthorized))
+        }
+    }
+
     @Test("parses USB and Wi-Fi candidates with target transport IDs")
     func parsesUSBAndWiFi() throws {
         let output = """

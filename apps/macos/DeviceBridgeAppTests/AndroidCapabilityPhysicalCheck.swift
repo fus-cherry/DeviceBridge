@@ -44,10 +44,10 @@ struct AndroidCapabilityPhysicalCheck {
         try require(model.clipboardReadiness == .ready && model.clipboardAction.canStart,
                     "first explicit read did not leave clipboard ready")
         let foregroundAfterRead = try await focusedPackage(adb: adb, transport: transport, runner: runner)
-        try require(foregroundAfterRead == AndroidHelperManager.packageName,
-                    "explicit clipboard action did not foreground the managed helper")
+        try require(foregroundAfterRead == initialForeground,
+                    "clipboard read replaced the business application")
 
-        let marker = "DeviceBridge MuMu clipboard " + UUID().uuidString
+        let marker = "DeviceBridge 安卓后台剪切板 📋\n" + UUID().uuidString
         model.clipboardText = marker
         model.requestClipboardSend()
         try await wait(seconds: 20) { !model.isClipboardBusy }
@@ -66,7 +66,14 @@ struct AndroidCapabilityPhysicalCheck {
         try await wait(seconds: 20) { !model.isClipboardBusy }
         try require(model.clipboardFeedback == "Read" && model.clipboardText.isEmpty,
                     "explicit empty clipboard was confused with unavailable content")
-        print("PASS: Android selection preserved foreground; clipboard helper started only on explicit action; verified text and empty round trips")
+        for _ in 0..<3 {
+            model.requestClipboardRead()
+            try await wait(seconds: 20) { !model.isClipboardBusy }
+            try require(model.clipboardFeedback == "Read", "repeated background read failed")
+            let focus = try await focusedPackage(adb: adb, transport: transport, runner: runner)
+            try require(focus == initialForeground, "repeated operation changed the foreground app")
+        }
+        print("PASS: Android selection and repeated clipboard operations preserved foreground; exact Unicode and empty round trips")
     }
 
     @MainActor

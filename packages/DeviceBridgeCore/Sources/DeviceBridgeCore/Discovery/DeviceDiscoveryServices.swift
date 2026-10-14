@@ -28,14 +28,33 @@ public struct AndroidDeviceDiscoveryService: DeviceDiscovering {
         guard result.exitCode == 0 else {
             throw DeviceDiscoveryError.commandFailed(exitCode: result.exitCode)
         }
+        let candidates: [TransportCandidate]
         do {
-            return try ADBDeviceParser().parse(
+            candidates = try ADBDeviceParser().parse(
                 result.standardOutputString,
                 observedAt: observedAt
             )
         } catch {
             throw DeviceDiscoveryError.malformedOutput
         }
+        let resolver = AndroidDeviceIdentityResolver(adbURL: adbURL, runner: runner)
+        // Limit concurrent device probes; preserve inventory order regardless of response order.
+        var resolved: [TransportCandidate] = []
+        for start in stride(from: 0, to: candidates.count, by: 4) {
+            try Task.checkCancellation()
+            let batch = candidates[start..<min(start + 4, candidates.count)]
+            let values = await withTaskGroup(of: (Int, TransportCandidate).self) { group in
+                for (index, candidate) in batch.enumerated() {
+                    group.addTask { (index, await resolver.resolve(candidate)) }
+                }
+                var values: [(Int, TransportCandidate)] = []
+                for await value in group { values.append(value) }
+                return values.sorted { $0.0 < $1.0 }.map(\.1)
+            }
+            resolved.append(contentsOf: values)
+        }
+        try Task.checkCancellation()
+        return resolved
     }
 }
 

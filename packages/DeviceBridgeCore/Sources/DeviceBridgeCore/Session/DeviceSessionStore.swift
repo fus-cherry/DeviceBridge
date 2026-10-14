@@ -76,12 +76,24 @@ public actor DeviceSessionStore {
         if maintenanceOwner != nil, let selectedDeviceIdentity,
            let selected = devices.first(where: { $0.identity == selectedDeviceIdentity }) {
             let ownedRoutes = Set(selected.candidates.map(\.id))
+            let displayed: DeviceRecord
+            if selectedDeviceIdentity.stability == .stable,
+               let fresh = replacement.first(where: { $0.identity == selectedDeviceIdentity }) {
+                var routes = fresh.candidates
+                if let owned = selected.candidates.first(where: { $0.id == session?.transportID }),
+                   !routes.contains(where: { $0.id == owned.id }) {
+                    routes.append(owned)
+                }
+                displayed = DeviceRecord(identity: selected.identity, name: fresh.name,
+                    model: fresh.model, osVersion: fresh.osVersion, authorization: fresh.authorization,
+                    candidates: routes, preferredTransportID: session?.transportID ?? selected.preferredTransportID)
+            } else {
+                displayed = hasShellOperation ? (replacement.first { $0.identity == selectedDeviceIdentity } ?? selected) : selected
+            }
             devices = replacement.filter {
                 $0.identity != selectedDeviceIdentity
                     && !$0.candidates.contains { ownedRoutes.contains($0.id) && $0.source == .adb }
-            } + [hasShellOperation
-                ? (replacement.first { $0.identity == selectedDeviceIdentity } ?? selected)
-                : selected]
+            } + [displayed]
             return
         }
         devices = replacement

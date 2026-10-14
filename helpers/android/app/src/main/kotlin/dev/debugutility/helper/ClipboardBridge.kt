@@ -1,22 +1,15 @@
 package dev.debugutility.helper
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.net.LocalServerSocket
 import android.net.LocalSocket
-import android.os.Handler
-import android.os.Looper
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.time.Instant
 import java.util.UUID
-import java.util.concurrent.Callable
 import java.util.concurrent.Executors
-import java.util.concurrent.ExecutionException
-import java.util.concurrent.FutureTask
 import java.util.concurrent.atomic.AtomicBoolean
 
 class ClipboardBridge(private val context: Context) : AutoCloseable {
@@ -27,7 +20,6 @@ class ClipboardBridge(private val context: Context) : AutoCloseable {
 
     private val running = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor()
-    private val mainHandler = Handler(Looper.getMainLooper())
     private val keepAlive = KeepAliveCommandGateway(context)
     private val completedRequestIds = mutableSetOf<String>()
     private val helperDeviceId: String by lazy {
@@ -101,8 +93,6 @@ class ClipboardBridge(private val context: Context) : AutoCloseable {
         val action = request.getString("action")
         val result = when (action) {
             "identity" -> identityResult(requestId)
-            "clipboard.read" -> readClipboard(requestId)
-            "clipboard.write" -> writeClipboard(requestId, request.optJSONObject("payload"))
             "keepAlive.start" -> startKeepAlive(requestId)
             "keepAlive.renew" -> renewKeepAlive(requestId, request.optJSONObject("payload"))
             "keepAlive.stop" -> stopKeepAlive(requestId, request.optJSONObject("payload"))
@@ -125,8 +115,6 @@ class ClipboardBridge(private val context: Context) : AutoCloseable {
         val action = request.optString("action")
         if (action !in setOf(
                 "identity",
-                "clipboard.read",
-                "clipboard.write",
                 "keepAlive.start",
                 "keepAlive.renew",
                 "keepAlive.stop",
@@ -161,14 +149,12 @@ class ClipboardBridge(private val context: Context) : AutoCloseable {
         requestId,
         JSONObject()
             .put("helperDeviceId", helperDeviceId)
-            .put("helperVersion", "0.3.0")
+            .put("helperVersion", "0.4.0")
             .put("protocolVersions", JSONArray().put(1))
             .put(
                 "actions",
                 JSONArray()
                     .put("identity")
-                    .put("clipboard.read")
-                    .put("clipboard.write")
                     .put("keepAlive.start")
                     .put("keepAlive.renew")
                     .put("keepAlive.stop")
@@ -258,69 +244,6 @@ class ClipboardBridge(private val context: Context) : AutoCloseable {
         return successResult(requestId, payload)
     }
 
-    private fun readClipboard(requestId: String): ByteArray = try {
-        val value = onMainThread {
-            val manager = context.getSystemService(ClipboardManager::class.java)
-            val clip = manager.primaryClip
-            if (clip == null) ClipboardReadValue.Unavailable
-            else ClipboardText.read((0 until clip.itemCount).asSequence().map { clip.getItemAt(it).text })
-        }
-        when (value) {
-            ClipboardReadValue.Unavailable -> errorResult(
-                requestId,
-                "actionRequired",
-                "clipboard.unavailable",
-                "No readable text is currently available.",
-                "Copy text on the device, keep the helper visible, and retry."
-            )
-            is ClipboardReadValue.Text -> successResult(requestId, JSONObject().put("text", value.value))
-        }
-    } catch (_: ClipboardText.TooLarge) {
-        errorResult(requestId, "failure", "clipboard.too_large", "Clipboard text exceeds 1 MiB (UTF-8). Nothing was truncated or transferred.")
-    } catch (_: SecurityException) {
-        errorResult(
-            requestId,
-            "permissionDenied",
-            "clipboard.denied",
-            "Clipboard access requires the helper to remain visible."
-        )
-    } catch (_: Exception) {
-        errorResult(requestId, "failure", "clipboard.read_failed", "Clipboard text could not be read.")
-    }
-
-    private fun writeClipboard(requestId: String, payload: JSONObject?): ByteArray {
-        val text = payload?.takeIf { it.has("text") }?.getString("text")
-            ?: return invalidResult(requestId, "clipboard.missing_text")
-        if (!ClipboardText.fits(text)) {
-            return invalidResult(requestId, "clipboard.too_large")
-        }
-        return try {
-            val verified = onMainThread {
-                val manager = context.getSystemService(ClipboardManager::class.java)
-                manager.setPrimaryClip(ClipData.newPlainText("Device Bridge", text))
-                val clip = manager.primaryClip
-                val current = if (clip == null) ClipboardReadValue.Unavailable
-                    else ClipboardText.read((0 until clip.itemCount).asSequence().map { clip.getItemAt(it).text })
-                current == ClipboardReadValue.Text(text)
-            }
-            if (verified) {
-                successResult(requestId, JSONObject().put("written", true))
-            } else {
-                errorResult(
-                    requestId,
-                    "actionRequired",
-                    "clipboard.write_unverified",
-                    "Android did not confirm the clipboard write.",
-                    "Keep the helper visible and retry."
-                )
-            }
-        } catch (_: SecurityException) {
-            errorResult(requestId, "permissionDenied", "clipboard.denied", "Clipboard access was denied.")
-        } catch (_: Exception) {
-            errorResult(requestId, "failure", "clipboard.write_failed", "Clipboard text could not be written.")
-        }
-    }
-
     private fun successResult(requestId: String, payload: JSONObject): ByteArray = JSONObject()
         .put("protocolVersion", 1)
         .put("requestId", requestId)
@@ -358,18 +281,6 @@ class ClipboardBridge(private val context: Context) : AutoCloseable {
             .toString()
             .toByteArray(Charsets.UTF_8)
 
-    private fun <T> onMainThread(callable: () -> T): T {
-        if (Looper.myLooper() == Looper.getMainLooper()) return callable()
-        val task = FutureTask(Callable(callable))
-        mainHandler.post(task)
-        return clipboardTaskResult(task)
-    }
-}
-
-internal fun <T> clipboardTaskResult(task: FutureTask<T>): T = try {
-    task.get()
-} catch (error: ExecutionException) {
-    throw error.cause ?: error
 }
 
 internal object FrameCodec {

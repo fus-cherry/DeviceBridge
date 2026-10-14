@@ -113,6 +113,19 @@ struct WorkspaceInventoryChecks {
         selectionSubscription.cancel()
         fixtureSubscription.cancel()
         try await fixtureContentActions()
+        let recovery = WorkspaceViewModel(arguments: ["--fixture-devices", "--fixture-recovery"])
+        recovery.start()
+        try await wait { !recovery.isRefreshing }
+        guard let android = recovery.devices.first(where: { $0.identity.platform == .android }) else {
+            throw Failure.failed("Android recovery fixture missing")
+        }
+        recovery.select(android.identity)
+        try await wait { recovery.connectionRecoveryCount > 0 && !recovery.isSelecting }
+        recovery.requestClipboardRead()
+        try await wait { !recovery.isClipboardBusy }
+        try require(recovery.clipboardFeedback == "Read",
+                    "recovered same-device route skipped rebinding without a foreground helper context")
+        recovery.stop()
         print("PASS: workspace inventory — initial/manual busy, silent timer, meaningful publication, identity/route/auth/removal, preserved selection, single-flight, stop/restart stale completion; no device commands or UI")
     }
 

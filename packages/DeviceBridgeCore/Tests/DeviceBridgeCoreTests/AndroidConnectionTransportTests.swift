@@ -5,6 +5,29 @@ import Testing
 
 @Suite("Android recovery command boundary")
 struct AndroidConnectionTransportTests {
+    @Test("hardware-bound recovery verifies the other route without starting a helper")
+    func hardwareRecovery() async throws {
+        let runner = RecoveryCommandFixture()
+        let identity = try DeviceIdentity(rawValue: "android:hardware:PHONE-123", stability: .stable, platform: .android)
+        let selected = try TransportCandidate(id: "11", identity: identity, kind: .usb, source: .adb,
+            status: .candidate, observedAt: Date(), metadata: ["hardwareSerial": "PHONE-123"])
+        let transport = AndroidConnectionTransport(adbURL: URL(fileURLWithPath: "/adb"), runner: runner,
+            context: nil, selectedCandidate: selected)
+        #expect(try await transport.verifyIdentity(candidate()))
+        #expect(await runner.requests.map(\.arguments) == [["-t", "11", "shell", "getprop", "ro.serialno"]])
+    }
+    @Test("recovery preserves spaces in the selected mDNS instance name")
+    func spacedServiceName() async throws {
+        let runner = RecoveryCommandFixture()
+        await runner.setMDNS("""
+        adb-phone (3) _adb-tls-connect._tcp. 192.168.1.2:41000
+        adb-phone (4) _adb-tls-connect._tcp. 192.168.1.3:42000
+        """)
+        let candidate = try candidate(serial: "adb-phone (3)._adb-tls-connect._tcp")
+        let transport = AndroidConnectionTransport(adbURL: URL(fileURLWithPath: "/adb"), runner: runner,
+            context: nil, selectedCandidate: candidate)
+        #expect(try await transport.recoveryEndpoints(for: candidate) == ["192.168.1.2:40000", "192.168.1.2:41000"])
+    }
     @Test("failed mDNS lookup retains the known endpoint")
     func mdnsFailureFallback() async throws {
         let runner = RecoveryCommandFixture()
@@ -96,6 +119,7 @@ private actor RecoveryCommandFixture: HostCommandRunning {
             output = mdns
         }
         else if request.arguments.last == "get-state" { output = "device\n" }
+        else if request.arguments.last == "ro.serialno" { output = "PHONE-123\n" }
         else if request.arguments.contains("tcp:0") { output = "12345\n" }
         else { output = "" }
         return HostCommandResult(exitCode: 0, standardOutput: Data(output.utf8), standardError: Data())
