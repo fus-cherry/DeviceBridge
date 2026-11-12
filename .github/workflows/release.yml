@@ -59,24 +59,8 @@ jobs:
         with:
           gradle-version: '8.11.1'
           cache-disabled: true
-      - name: Test shared protocol
-        run: swift test --package-path packages/DeviceBridgeProtocol
-      - name: Test secure channel
-        run: swift test --package-path packages/DeviceBridgeSecureChannel --no-parallel
-      - name: Test device core
-        run: swift test --package-path packages/DeviceBridgeCore --no-parallel -j 1
-      - name: Check packaging contracts
-        run: python3 -m unittest discover -s scripts -p 'test_*.py'
-      - name: Check workspace state flows
-        run: |
-          set -euo pipefail
-          bash scripts/check-device-selection.sh
-          bash scripts/check-ios-runner-workspace.sh
-          bash scripts/check-workspace-inventory.sh
-          bash scripts/check-workspace-modules.sh
-          bash scripts/check-device-information.sh
-          bash scripts/check-android-shell.sh
-          bash scripts/check-agent-api.sh
+      # UI runs first in a clean GUI session. Later loopback Python contract tests
+      # may show an unrelated macOS local-network prompt; never grant or reset TCC.
       - name: Test and sign Android helper
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -137,6 +121,24 @@ jobs:
             .build/sidebar-ui-attachments
           if-no-files-found: warn
           retention-days: 14
+      - name: Test shared protocol
+        run: swift test --package-path packages/DeviceBridgeProtocol
+      - name: Test secure channel
+        run: swift test --package-path packages/DeviceBridgeSecureChannel --no-parallel
+      - name: Test device core
+        run: swift test --package-path packages/DeviceBridgeCore --no-parallel -j 1
+      - name: Check packaging contracts
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Check workspace state flows
+        run: |
+          set -euo pipefail
+          bash scripts/check-device-selection.sh
+          bash scripts/check-ios-runner-workspace.sh
+          bash scripts/check-workspace-inventory.sh
+          bash scripts/check-workspace-modules.sh
+          bash scripts/check-device-information.sh
+          bash scripts/check-android-shell.sh
+          bash scripts/check-agent-api.sh
       - name: Build and verify DMG
         id: package
         env:

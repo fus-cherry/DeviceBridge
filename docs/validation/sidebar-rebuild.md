@@ -53,3 +53,13 @@ prove USB authorization, vendor firmware, real HDC/ADB transport, or real-device
 content operations. The build is ad-hoc signed and not Apple-notarized until a
 separately authorized signing setup succeeds. No main merge or public release is
 part of this repair.
+
+## First macOS UI loop
+
+The full core and workspace checks passed. The first UI run saved a real screenshot
+showing an unrelated macOS local-network permission dialog for Python from earlier
+loopback contract tests. The auto-regroup check ran, but the two following UI launches
+could not expose controls, so the build correctly failed and produced no DMG. No
+permission was granted and no privacy setting was changed. The UI phase now runs
+before those network checks, and tests use the standard New Window command when
+macOS does not restore a test window. A fresh successful interaction run is required.

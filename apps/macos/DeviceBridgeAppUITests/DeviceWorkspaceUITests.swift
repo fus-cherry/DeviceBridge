@@ -13,6 +13,7 @@ final class DeviceWorkspaceUITests: XCTestCase {
         app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-sidebar", "--language-test-suite", suite]
         app.launch()
         app.activate()
+        ensureSidebarWindow(app)
         XCTAssertTrue(app.buttons["detected-devices-toggle"].waitForExistence(timeout: 10))
         let detected = app.buttons["detected-devices-toggle"]
         let attention = app.buttons["devices-needing-attention-toggle"]
@@ -87,6 +88,7 @@ final class DeviceWorkspaceUITests: XCTestCase {
         app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-sidebar", "--language-test-suite", suite]
         app.launch()
         app.activate()
+        ensureSidebarWindow(app)
         let header = app.buttons["detected-devices-toggle"]
         XCTAssertTrue(header.waitForExistence(timeout: 10))
         XCTAssertEqual(header.label, "已发现设备")
@@ -112,6 +114,7 @@ final class DeviceWorkspaceUITests: XCTestCase {
         app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-sidebar", "--fixture-sidebar-refresh", "--fixture-sidebar-state", state.path]
         app.launch()
         app.activate()
+        ensureSidebarWindow(app)
         XCTAssertTrue(app.buttons["detected-devices-toggle"].waitForExistence(timeout: 3))
         XCTAssertFalse(app.buttons["Android Test Device"].exists,
                        "initial offline fixture must start in the collapsed attention group")
@@ -128,6 +131,16 @@ final class DeviceWorkspaceUITests: XCTestCase {
         add(attachment)
     }
 
+
+    @MainActor
+    private func ensureSidebarWindow(_ app: XCUIApplication) {
+        // macOS may relaunch a WindowGroup app without restoring its closed test window.
+        // Use the standard New Window command, never change OS permission settings.
+        if !app.windows.firstMatch.waitForExistence(timeout: 2) {
+            app.typeKey("n", modifierFlags: .command)
+        }
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10), app.debugDescription)
+    }
 
     /// Opt-in diagnosis of the shipped app. No fixture mode, clipboard read/write or VM start.
     @MainActor
