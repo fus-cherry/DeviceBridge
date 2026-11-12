@@ -3,6 +3,11 @@ import Foundation
 
 public enum DeviceFileScope: Sendable, Equatable {
     case androidSharedDownloads
+    /// Debug files visible to the authorized HDC shell; bounded writes do not bypass app sandboxes.
+    case harmonyDebugFiles
+    case harmonySharedDocuments
+    /// Public Documents for an explicitly selected OS user, not a guessed active account.
+    case harmonyUserDocuments(userID: String)
     case androidAppData(packageID: String)
     case iOSTemporary(identifier: String)
     case iOSAppData(bundleID: String)
@@ -12,6 +17,7 @@ public enum DeviceFileScope: Sendable, Equatable {
     public var platform: DevicePlatform {
         switch self {
         case .androidSharedDownloads, .androidAppData: .android
+        case .harmonyDebugFiles, .harmonySharedDocuments, .harmonyUserDocuments: .harmonyOS
         case .iOSTemporary, .iOSAppData, .iOSAppGroup, .iOSSystemCrashLogs: .iOS
         }
     }
@@ -36,6 +42,10 @@ public struct DeviceFileLocation: Sendable, Equatable {
             throw DeviceFileLocationError.invalidRelativePath
         }
         switch scope {
+        case let .harmonyUserDocuments(userID):
+            guard let value = Int32(userID), value >= 100, String(value) == userID else {
+                throw DeviceFileLocationError.invalidIdentifier
+            }
         case let .androidAppData(packageID),
              let .iOSAppData(packageID),
              let .iOSAppGroup(packageID),
@@ -43,11 +53,20 @@ public struct DeviceFileLocation: Sendable, Equatable {
             guard Self.isValidIdentifier(packageID) else {
                 throw DeviceFileLocationError.invalidIdentifier
             }
-        case .androidSharedDownloads, .iOSSystemCrashLogs:
+        case .androidSharedDownloads, .harmonyDebugFiles, .harmonySharedDocuments, .iOSSystemCrashLogs:
             break
         }
         self.scope = scope
         self.relativePath = relativePath
+    }
+
+    /// A fresh directory prevents replacement of existing user documents without
+    /// relying on hard links, which HMDFS does not necessarily support.
+    public static func harmonyUserDocument(userID: String, fileName: String,
+                                           transferID: UUID = UUID()) throws -> DeviceFileLocation {
+        guard !fileName.contains("/") else { throw DeviceFileLocationError.invalidRelativePath }
+        return try DeviceFileLocation(scope: .harmonyUserDocuments(userID: userID),
+            relativePath: "DeviceBridge-" + transferID.uuidString + "/" + fileName)
     }
 
     private static func isValidIdentifier(_ value: String) -> Bool {
@@ -76,6 +95,7 @@ public enum FileIntegrity {
         var hasher = SHA256()
         var length: Int64 = 0
         while try autoreleasepool(invoking: {
+            try Task.checkCancellation()
             // FileHandle's Foundation buffers otherwise survive the whole hashing operation,
             // retaining file-sized memory even though each individual read is bounded.
             guard let chunk = try handle.read(upToCount: 1_024 * 1_024), !chunk.isEmpty else { return false }
@@ -114,6 +134,15 @@ public protocol DeviceFileProviding: Sendable {
         transportID: String,
         operationID: UUID
     ) async throws -> DeviceFileReceipt
+}
+
+/// Providers that stage a stable snapshot can reject source mutation before a
+/// remote commit, rather than discovering mismatched bytes after writing them.
+public protocol DeviceFileVerifiedSending: DeviceFileProviding {
+    func sendVerified(localURL: URL, destination: DeviceFileLocation, transportID: String,
+                      operationID: UUID, replaceExisting: Bool,
+                      expectedMetadata: FileIntegrityMetadata,
+                      validateSession: @escaping @Sendable () async throws -> Void) async throws -> DeviceFileReceipt
 }
 
 public enum FileTransferDirection: Sendable, Equatable {
@@ -158,15 +187,18 @@ public enum FileTransferOutcome: Sendable, Equatable {
 public actor FileTransferService {
     private let store: DeviceSessionStore
     private let provider: any DeviceFileProviding
+    private let expectedSession: ConnectionSession?
     private let fileManager: FileManager
 
     public init(
         store: DeviceSessionStore,
         provider: any DeviceFileProviding,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        session: ConnectionSession? = nil
     ) {
         self.store = store
         self.provider = provider
+        self.expectedSession = session
         self.fileManager = fileManager
     }
 
@@ -178,6 +210,8 @@ public actor FileTransferService {
         let sourceMetadata: FileIntegrityMetadata
         do {
             sourceMetadata = try FileIntegrity.metadata(for: sourceURL)
+        } catch is CancellationError {
+            return .failure(OperationFailure(code: .cancelled, safeMessage: "File transfer cancelled."))
         } catch {
             return .failure(OperationFailure(
                 code: .restricted,
@@ -186,7 +220,7 @@ public actor FileTransferService {
         }
         let token: SessionToken
         do {
-            token = try await store.beginOperation(.fileSend)
+            token = try await store.beginOperation(.fileSend, expectedSession: expectedSession)
         } catch DeviceSessionStoreError.connectionBusy {
             return .failure(OperationFailure(code: .failure, safeMessage: "Connection check in progress. Retry shortly."))
         } catch {
@@ -198,19 +232,31 @@ public actor FileTransferService {
         }
 
         do {
-            let receipt = try await provider.send(
-                localURL: sourceURL,
-                destination: destination,
-                transportID: token.transportID,
-                operationID: token.operationID,
-                replaceExisting: replaceExisting
-            )
+            let receipt: DeviceFileReceipt
+            if let verifiedProvider = provider as? any DeviceFileVerifiedSending {
+                receipt = try await verifiedProvider.sendVerified(
+                    localURL: sourceURL, destination: destination, transportID: token.transportID,
+                    operationID: token.operationID, replaceExisting: replaceExisting,
+                    expectedMetadata: sourceMetadata,
+                    validateSession: { [store] in
+                        try Task.checkCancellation()
+                        guard await store.canPublish(token) else { throw DeviceSessionStoreError.staleSession }
+                    })
+            } else {
+                receipt = try await provider.send(
+                    localURL: sourceURL,
+                    destination: destination,
+                    transportID: token.transportID,
+                    operationID: token.operationID,
+                    replaceExisting: replaceExisting
+                )
+            }
             guard await store.canPublish(token) else {
                 await store.finishOperation(token)
                 return .stale
             }
             guard let validation = Self.validate(local: sourceMetadata, remote: receipt) else {
-                await store.finishOperation(token)
+                guard await store.finishOperation(token) else { return .stale }
                 return integrityFailure()
             }
             let artifact = TransferArtifact(
@@ -225,10 +271,10 @@ public actor FileTransferService {
                 validation: validation,
                 completedAt: Date()
             )
-            await store.finishOperation(token)
+            guard await store.finishOperation(token) else { return .stale }
             return .transferred(artifact)
         } catch {
-            await store.finishOperation(token)
+            guard await store.finishOperation(token) else { return .stale }
             return failure(for: error)
         }
     }
@@ -247,7 +293,7 @@ public actor FileTransferService {
         }
         let token: SessionToken
         do {
-            token = try await store.beginOperation(.fileReceive)
+            token = try await store.beginOperation(.fileReceive, expectedSession: expectedSession)
         } catch DeviceSessionStoreError.connectionBusy {
             return .failure(OperationFailure(code: .failure, safeMessage: "Connection check in progress. Retry shortly."))
         } catch {
@@ -284,13 +330,25 @@ public actor FileTransferService {
                 await store.finishOperation(token)
                 return integrityFailure()
             }
+            try Task.checkCancellation()
+            guard await store.canPublish(token) else {
+                try? fileManager.removeItem(at: partialURL)
+                await store.finishOperation(token)
+                return .stale
+            }
             if fileManager.fileExists(atPath: destinationURL.path) {
+                guard replaceExisting else {
+                    throw OperationFailure(code: .restricted,
+                        safeMessage: "A file already exists at the selected destination.",
+                        recoveryAction: "Choose Replace explicitly or select another destination.")
+                }
                 _ = try fileManager.replaceItemAt(destinationURL, withItemAt: partialURL)
             } else {
                 try fileManager.moveItem(at: partialURL, to: destinationURL)
             }
             guard await store.canPublish(token) else {
-                try? fileManager.removeItem(at: destinationURL)
+                // Publication has already committed. Never delete the destination here:
+                // it may have replaced an existing file with the user's approval.
                 await store.finishOperation(token)
                 return .stale
             }

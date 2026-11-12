@@ -5,6 +5,7 @@ import Foundation
 /// UI copies only. ImageLibraryService owns the catalog, opaque locators and retained original.
 @MainActor
 final class PhoneImagesViewModel: ObservableObject {
+    @Published private(set) var mediaKind: PhoneMediaKind = .image
     @Published private(set) var source: ImageSource = .androidPictures
     @Published private(set) var catalog: ImageCatalog?
     @Published private(set) var preview: ImagePreview?
@@ -30,12 +31,14 @@ final class PhoneImagesViewModel: ObservableObject {
     private var stopped = false
 
     let sources: [ImageSource]
-    init(service: ImageLibraryService, sources: [ImageSource] = [.androidPictures, .androidDCIM, .androidDownload]) {
+    init(service: ImageLibraryService, sources: [ImageSource] = [.androidPictures, .androidDCIM, .androidMovies, .androidDownload]) {
         precondition(!sources.isEmpty)
         self.service = service
         self.sources = sources
         source = sources[0]
     }
+
+    var isHarmonyMedia: Bool { source == .harmonyMediaLibrary }
 
     var pageCount: Int { max(1, ((catalog?.items.count ?? 0) + Self.pageSize - 1) / Self.pageSize) }
     var pageItems: [ImageItem] { Array((catalog?.items ?? []).dropFirst(page * Self.pageSize).prefix(Self.pageSize)) }
@@ -43,7 +46,7 @@ final class PhoneImagesViewModel: ObservableObject {
     func showPage(_ page: Int) {
         guard !stopped, catalog != nil else { return }
         self.page = min(max(0, page), pageCount - 1)
-        thumbnailsEnabled = true
+        thumbnailsEnabled = !isHarmonyMedia
         startThumbnails()
     }
 
@@ -60,10 +63,10 @@ final class PhoneImagesViewModel: ObservableObject {
     }
 
     private func startThumbnails() {
-        guard !stopped, thumbnailsEnabled, !isBusy, let catalog else { return }
+        guard !stopped, !isHarmonyMedia, thumbnailsEnabled, !isBusy, let catalog else { return }
         let previous = cancelThumbnailWork()
         let expected = thumbnailRevision
-        let items = pageItems
+        let items = pageItems.filter { $0.mediaKind == .image }
         isLoadingThumbnails = true
         thumbnailTask = Task {
             await previous?.value
@@ -109,6 +112,12 @@ final class PhoneImagesViewModel: ObservableObject {
         page = 0
     }
 
+    func selectMediaKind(_ kind: PhoneMediaKind) {
+        guard mediaKind != kind else { return }
+        mediaKind = kind
+        reset()
+    }
+
     func changeSource(_ source: ImageSource) {
         guard sources.contains(source) else { return }
         self.source = source
@@ -133,6 +142,7 @@ final class PhoneImagesViewModel: ObservableObject {
         feedback = nil
         isBusy = true
         let source = source
+        let kind = mediaKind
         task = Task {
             await previousThumbnail?.value
             await previous?.value
@@ -140,10 +150,12 @@ final class PhoneImagesViewModel: ObservableObject {
             await service.clear()
             guard revision == expected, !Task.isCancelled else { return }
             do {
-                let result = try await service.load(source: source)
+                let result = try await service.load(source: source, mediaKind: kind)
                 guard revision == expected, !Task.isCancelled else { return }
                 catalog = result
-                feedback = result.items.isEmpty ? "No images in this shared folder." : nil
+                feedback = result.items.isEmpty
+                    ? (source == .harmonyMediaLibrary ? "No matching media was returned by HarmonyOS mediatool."
+                       : (kind == .video ? "No videos in this shared folder." : "No images in this shared folder.")) : nil
             } catch {
                 guard revision == expected else { return }
                 feedback = Self.message(error)
@@ -173,7 +185,7 @@ final class PhoneImagesViewModel: ObservableObject {
                 let result = try await service.preview(itemID: item.id)
                 guard revision == expected, !Task.isCancelled else { return }
                 preview = result
-                cacheThumbnail(result.thumbnailPNG, for: item.id)
+                if !result.thumbnailPNG.isEmpty { cacheThumbnail(result.thumbnailPNG, for: item.id) }
             } catch {
                 let committed = await service.currentPreview
                 guard revision == expected else { return }
@@ -256,7 +268,8 @@ final class PhoneImagesViewModel: ObservableObject {
             do {
                 _ = try await service.export(previewID: previewID, destination: destination, replaceExisting: replaceExisting)
                 guard revision == expectedRevision, !Task.isCancelled else { return }
-                feedback = preview?.sourceHashVerified == true ? "Original exported · SHA-256 verified"
+                feedback = isHarmonyMedia ? "Device export copy saved · SHA-256 verified"
+                    : preview?.sourceHashVerified == true ? "Original exported · SHA-256 verified"
                     : "Original format exported · local copy verified; device checksum unavailable"
             } catch {
                 guard revision == expectedRevision else { return }
@@ -284,7 +297,9 @@ final class PhoneImagesViewModel: ObservableObject {
             guard revision == expected else { return }
             preview = committed?.catalogID == catalog?.id ? committed : nil
             isBusy = false
-            feedback = "Image operation cancelled."
+            feedback = isHarmonyMedia
+                ? "Media operation cancelled. Cleanup was attempted; a disconnected device may retain the temporary export. The system library was not changed."
+                : "Image operation cancelled."
         }
     }
 
@@ -322,7 +337,8 @@ final class PhoneImagesViewModel: ObservableObject {
 
     private static func message(_ error: any Error) -> String {
         switch error {
-        case PhoneImageError.limitExceeded: "Image limit exceeded (20 MiB / 100 MP, or folder scan limit)."
+        case let failure as OperationFailure: failure.safeMessage
+        case PhoneImageError.limitExceeded: "Media limit exceeded (images: 20 MiB / 100 MP; videos: 512 MiB; bounded folder scan)."
         case PhoneImageError.invalidImage: "This image is damaged or its format cannot be decoded."
         case PhoneImageError.integrityMismatch, PhoneImageError.sourceChanged:
             "The original changed or verification failed. Refresh and retry."
@@ -336,7 +352,7 @@ final class PhoneImagesViewModel: ObservableObject {
             "Connection or image operation in progress. Retry shortly."
         case is CancellationError, HostCommandError.cancelled: "Image operation cancelled."
         case HostCommandError.timedOut: "Image access timed out. Check the connection and retry."
-        case HostCommandError.outputLimitExceeded: "Image limit exceeded (20 MiB / 100 MP, or folder scan limit)."
+        case HostCommandError.outputLimitExceeded: "Media limit exceeded (images: 20 MiB / 100 MP; videos: 512 MiB; bounded folder scan)."
         default: "Cannot read this image source. Check device authorization and connection."
         }
     }

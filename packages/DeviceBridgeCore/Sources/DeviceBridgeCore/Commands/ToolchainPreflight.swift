@@ -2,6 +2,7 @@ import Foundation
 
 public enum HostTool: String, CaseIterable, Sendable {
     case adb
+    case hdc
     case xcrun
     case xcodebuild
 
@@ -11,6 +12,8 @@ public enum HostTool: String, CaseIterable, Sendable {
         switch self {
         case .adb:
             "Android Platform-Tools was not found."
+        case .hdc:
+            "HarmonyOS HDC was not found."
         case .xcrun, .xcodebuild:
             "The active Xcode command-line tools were not found."
         }
@@ -20,6 +23,8 @@ public enum HostTool: String, CaseIterable, Sendable {
         switch self {
         case .adb:
             "Choose Android SDK"
+        case .hdc:
+            "Install DevEco Studio and add its SDK toolchains directory to PATH."
         case .xcrun, .xcodebuild:
             "Open Xcode Settings"
         }
@@ -65,6 +70,22 @@ public struct ToolchainPreflight: Sendable {
                     .appending(path: "platform-tools", directoryHint: .isDirectory),
                 at: 0
             )
+        }
+        if let hdcHome = environment["HDC_HOME"], !hdcHome.isEmpty {
+            directories.insert(URL(fileURLWithPath: hdcHome, isDirectory: true), at: 0)
+        }
+        for key in ["DEVECO_SDK_HOME", "OHOS_SDK_HOME"] {
+            if let sdk = environment[key], !sdk.isEmpty {
+                directories.append(URL(fileURLWithPath: sdk, isDirectory: true)
+                    .appending(path: "default/openharmony/toolchains", directoryHint: .isDirectory))
+                directories.append(URL(fileURLWithPath: sdk, isDirectory: true)
+                    .appending(path: "toolchains", directoryHint: .isDirectory))
+            }
+        }
+        directories.append(URL(fileURLWithPath:
+            "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains", isDirectory: true))
+        for path in (environment["PATH"] ?? "").split(separator: ":") where path.hasPrefix("/") {
+            directories.append(URL(fileURLWithPath: String(path), isDirectory: true))
         }
         return directories
     }

@@ -62,7 +62,7 @@ public enum DeviceInformationValue: Codable, Equatable, Sendable {
 }
 
 public struct DeviceInformationSource: Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable { case adb, coreDevice, iosRuntime, session }
+    public enum Kind: String, Codable, Sendable { case adb, hdc, coreDevice, iosRuntime, session }
     public enum Freshness: String, Codable, Sendable { case live, possiblyCached, sessionSnapshot }
     public let kind: Kind
     public let queriedAt: Date

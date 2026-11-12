@@ -11,7 +11,7 @@ public enum DeviceInventory {
                     identity: identity,
                     name: displayMetadata["name"]
                         ?? displayMetadata["model"]
-                        ?? (identity.platform == .android ? "Android device" : "iOS device"),
+                        ?? defaultName(for: identity.platform),
                     model: displayMetadata["model"],
                     osVersion: displayMetadata["osVersion"],
                     authorization: authorization(for: groupedCandidates),
@@ -23,6 +23,14 @@ public enum DeviceInventory {
                 if $0.name != $1.name { return $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                 return $0.identity.displaySuffix < $1.identity.displaySuffix
             }
+    }
+
+    private static func defaultName(for platform: DevicePlatform) -> String {
+        switch platform {
+        case .android: "Android device"
+        case .iOS: "iOS device"
+        case .harmonyOS: "HarmonyOS device"
+        }
     }
 
     private static func authorization(

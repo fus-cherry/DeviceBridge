@@ -133,6 +133,120 @@ struct IOSFileProviderTests {
         #expect(!FileManager.default.fileExists(atPath: copy.arguments[index + 1]))
     }
 
+    @Test("CoreDevice listing preserves direct children and excludes symlinks")
+    func browseFiles() async throws {
+        let json = """
+        {"result":{"files":[
+          {"name":"Documents","resources":{"isDirectory":true},"metadata":{"size":0}},
+          {"name":"a b.txt","resources":{"isDirectory":false},"metadata":{"size":7}},
+          {"name":"outside","resources":{"isDirectory":true,"isSymbolicLink":true}}
+        ]}}
+        """
+        let runner = IOSFileCommandRunner(fileName: "", byteLength: 0, metadataJSON: json)
+        let provider = IOSFileProvider(xcrunURL: URL(fileURLWithPath: "/xcrun"), runner: runner)
+        let directory = try DeviceDirectoryLocation(scope: .iOSAppData(bundleID: "dev.test"), relativePath: "Library")
+        let entries = try await provider.list(directory: directory, transportID: "device", operationID: UUID())
+        #expect(entries.count == 2)
+        #expect(entries[0].isDirectory)
+        #expect(entries[0].byteLength == nil)
+        #expect(entries[1].location.relativePath == "Library/a b.txt")
+        #expect(entries[1].byteLength == 7)
+        #expect(await runner.requests.first?.arguments.contains("--no-recurse") == true)
+        #expect(await runner.requests.first?.arguments.contains("Library") == true)
+    }
+
+    @Test("unrecognized CoreDevice listing schema fails instead of showing empty folder")
+    func unknownListing() async throws {
+        let runner = IOSFileCommandRunner(fileName: "", byteLength: 0, metadataJSON: "{\"result\":{}}")
+        let provider = IOSFileProvider(xcrunURL: URL(fileURLWithPath: "/xcrun"), runner: runner)
+        let directory = try DeviceDirectoryLocation(scope: .iOSSystemCrashLogs)
+        await #expect(throws: IOSFileProviderError.malformedMetadata) {
+            try await provider.list(directory: directory, transportID: "device", operationID: UUID())
+        }
+    }
+
+    @Test("cancelled metadata result never authorizes copy and removes its sidecar")
+    func cancelledMetadata() async throws {
+        let runner = IOSFileCommandRunner(fileName: "x", byteLength: 1, cancelAfterMetadata: true)
+        let provider = IOSFileProvider(xcrunURL: URL(fileURLWithPath: "/xcrun"), runner: runner)
+        let destination = try DeviceFileLocation(scope: .iOSAppData(bundleID: "dev.test"), relativePath: "x")
+        let task = Task {
+            try await provider.send(localURL: URL(fileURLWithPath: "/tmp/unused"), destination: destination,
+                transportID: "device", operationID: UUID(), replaceExisting: false)
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        let requests = await runner.requests
+        #expect(requests.count == 1)
+        let request = try #require(requests.first)
+        #expect(!request.arguments.contains("copy"))
+        let index = try #require(request.arguments.firstIndex(of: "--json-output"))
+        #expect(!FileManager.default.fileExists(atPath: request.arguments[index + 1]))
+    }
+
+    @Test("oversized JSON sidecars fail closed and are removed")
+    func oversizedMetadata() async throws {
+        let json = String(repeating: " ", count: 4 * 1_024 * 1_024 + 1) + "{\"result\":{\"files\":[]}}"
+        let runner = IOSFileCommandRunner(fileName: "", byteLength: 0, metadataJSON: json)
+        let provider = IOSFileProvider(xcrunURL: URL(fileURLWithPath: "/xcrun"), runner: runner)
+        let directory = try DeviceDirectoryLocation(scope: .iOSSystemCrashLogs)
+        await #expect(throws: IOSFileProviderError.malformedMetadata) {
+            try await provider.list(directory: directory, transportID: "device", operationID: UUID())
+        }
+        let destination = try DeviceFileLocation(scope: .iOSAppData(bundleID: "dev.test"), relativePath: "x")
+        await #expect(throws: IOSFileProviderError.malformedMetadata) {
+            try await provider.send(localURL: URL(fileURLWithPath: "/tmp/unused"), destination: destination,
+                transportID: "device", operationID: UUID(), replaceExisting: false)
+        }
+        for request in await runner.requests {
+            #expect(!request.arguments.contains("copy"))
+            let index = try #require(request.arguments.firstIndex(of: "--json-output"))
+            #expect(!FileManager.default.fileExists(atPath: request.arguments[index + 1]))
+        }
+    }
+
+    @Test("ambiguous or malformed entries cannot authorize a copy", arguments: [
+        "{\"name\":\"x\",\"fileSize\":1},{\"name\":\"x\",\"fileSize\":2}",
+        "{\"name\":\"../x\",\"fileSize\":1}",
+        "{\"name\":\"x\",\"nested\":{\"name\":\"x\",\"fileSize\":1}}",
+        "{\"name\":\"x\",\"fileSize\":true}",
+        "{\"name\":\"x\",\"fileSize\":1.5}",
+        "{\"name\":\"x\",\"fileSize\":1,\"isDirectory\":true}"
+    ])
+    func malformedEntries(_ entries: String) async throws {
+        let runner = IOSFileCommandRunner(fileName: "", byteLength: 0,
+            metadataJSON: "{\"result\":{\"files\":[" + entries + "]}}")
+        let provider = IOSFileProvider(xcrunURL: URL(fileURLWithPath: "/xcrun"), runner: runner)
+        let destination = try DeviceFileLocation(scope: .iOSAppData(bundleID: "dev.test"), relativePath: "x")
+        await #expect(throws: IOSFileProviderError.malformedMetadata) {
+            try await provider.send(localURL: URL(fileURLWithPath: "/tmp/unused"), destination: destination,
+                transportID: "device", operationID: UUID(), replaceExisting: false)
+        }
+        #expect(await runner.requests.allSatisfy { !$0.arguments.contains("copy") })
+    }
+
+    @Test("duplicate direct children fail listing")
+    func duplicateListing() async throws {
+        let json = "{\"result\":{\"files\":[{\"name\":\"x\",\"isDirectory\":false},{\"name\":\"x\",\"isDirectory\":false}]}}"
+        let runner = IOSFileCommandRunner(fileName: "", byteLength: 0, metadataJSON: json)
+        let provider = IOSFileProvider(xcrunURL: URL(fileURLWithPath: "/xcrun"), runner: runner)
+        let directory = try DeviceDirectoryLocation(scope: .iOSSystemCrashLogs)
+        await #expect(throws: IOSFileProviderError.malformedMetadata) {
+            try await provider.list(directory: directory, transportID: "device", operationID: UUID())
+        }
+    }
+
+    @Test("failed metadata query does not authorize overwrite")
+    func deniedListingFailsClosed() async throws {
+        let runner = IOSFileCommandRunner(fileName: "x", byteLength: 1, exitCode: 1)
+        let provider = IOSFileProvider(xcrunURL: URL(fileURLWithPath: "/xcrun"), runner: runner)
+        let destination = try DeviceFileLocation(scope: .iOSAppData(bundleID: "dev.test"), relativePath: "x")
+        await #expect(throws: IOSFileProviderError.scopeUnavailable) {
+            try await provider.send(localURL: URL(fileURLWithPath: "/tmp/unused"), destination: destination,
+                transportID: "device", operationID: UUID(), replaceExisting: false)
+        }
+        #expect(await runner.requests.allSatisfy { !$0.arguments.contains("copy") })
+    }
+
     @Test("Android and read-only crash-log destinations are rejected before copy")
     func restrictedScopes() async throws {
         let runner = IOSFileCommandRunner(fileName: "x", byteLength: 1)
@@ -172,14 +286,18 @@ private actor IOSFileCommandRunner: HostCommandRunning {
     let byteLength: Int64
     let receivedData: Data
     let metadataJSON: String?
+    let cancelAfterMetadata: Bool
     let cancelAfterCopy: Bool
+    let exitCode: Int32
 
-    init(fileName: String, byteLength: Int64, receivedData: Data = Data(), metadataJSON: String? = nil, cancelAfterCopy: Bool = false) {
+    init(fileName: String, byteLength: Int64, receivedData: Data = Data(), metadataJSON: String? = nil, cancelAfterCopy: Bool = false, exitCode: Int32 = 0, cancelAfterMetadata: Bool = false) {
         self.fileName = fileName
         self.byteLength = byteLength
         self.receivedData = receivedData
         self.metadataJSON = metadataJSON
+        self.cancelAfterMetadata = cancelAfterMetadata
         self.cancelAfterCopy = cancelAfterCopy
+        self.exitCode = exitCode
     }
 
     func run(_ request: HostCommandRequest) async throws -> HostCommandResult {
@@ -191,6 +309,7 @@ private actor IOSFileCommandRunner: HostCommandRunning {
             {"result":{"items":[{"name":"\(fileName)","fileSize":\(byteLength)}]}}
             """
             try Data((metadataJSON ?? json).utf8).write(to: outputURL)
+            if cancelAfterMetadata { withUnsafeCurrentTask { $0?.cancel() } }
         }
         if request.arguments.starts(with: ["devicectl", "device", "copy", "from"]),
            let destinationIndex = request.arguments.firstIndex(of: "--destination") {
@@ -199,6 +318,6 @@ private actor IOSFileCommandRunner: HostCommandRunning {
             )
             if cancelAfterCopy { withUnsafeCurrentTask { $0?.cancel() } }
         }
-        return HostCommandResult(exitCode: 0, standardOutput: Data(), standardError: Data())
+        return HostCommandResult(exitCode: exitCode, standardOutput: Data(), standardError: Data())
     }
 }

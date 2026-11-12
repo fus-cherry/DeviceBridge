@@ -163,8 +163,91 @@ struct PhoneImagesModelChecks {
         try require(album.selectedDownloadIDs.isEmpty && album.batchSummary == nil, "source change retained batch state")
         album.exportSelected(expectedRevision: staleBatchRevision, itemIDs: staleBatchIDs, directory: staleFolder)
         try require(!album.isBusy, "source change accepted stale batch")
+        // Switching to videos invalidates any image operation and suppresses eager movie reads.
+        album.load()
+        try await wait { !album.isBusy }
+        let pendingImage = album.catalog!.items[0]
+        await albumProvider.suspendNextRead()
+        album.select(pendingImage)
+        try await wait { await albumProvider.isSuspended }
+        album.selectMediaKind(.video)
+        await albumProvider.resumeRead()
+        try await wait { !album.isBusy }
+        try require(album.mediaKind == .video && album.preview == nil && album.catalog == nil,
+                    "mode switch retained stale image publication")
+        album.load()
+        try await wait { !album.isBusy }
+        try require(album.catalog?.items.first?.mediaKind == .video, "video catalog filter")
+        let readsBeforeVideoPage = await albumProvider.reads
+        album.showPage(0)
+        try await wait { !album.isLoadingThumbnails }
+        try require(await albumProvider.reads == readsBeforeVideoPage, "video page eagerly downloaded originals")
+        try require(album.thumbnailErrors.isEmpty, "video placeholders are not thumbnail failures")
+        album.selectMediaKind(.image)
+        try await wait { !album.isBusy }
+        try require(album.preview == nil && album.catalog == nil && album.selectedDownloadIDs.isEmpty,
+                    "returning to image mode retained video state")
         album.stop()
         try await wait { !album.isBusy }
+        // Production model behavior for Harmony: catalog/page changes must not trigger
+        // device-side exports. The generic fixture supplies bytes, not mediatool behavior.
+        let harmonyProvider = try ModelImageProvider(itemCount: 30)
+        let harmonyService = ImageLibraryService(store: store, session: snapshot.session!, provider: harmonyProvider,
+            sessionDirectory: directory.appending(path: "harmony-cache"))
+        let harmony = PhoneImagesViewModel(service: harmonyService, sources: [.harmonyMediaLibrary])
+        try require(await harmonyProvider.reads == 0 && harmony.catalog == nil, "Harmony init read media")
+        harmony.load()
+        try await wait { !harmony.isBusy }
+        harmony.showPage(0)
+        harmony.showPage(1)
+        harmony.suspendThumbnails()
+        harmony.showPage(0)
+        try require(await harmonyProvider.reads == 0 && !harmony.isLoadingThumbnails,
+                    "Harmony page activation must not export automatic thumbnails")
+        let harmonyItem = harmony.catalog!.items[0]
+        do {
+            _ = try await harmonyService.thumbnail(itemID: harmonyItem.id)
+            throw CheckFailure.failed("Harmony core thumbnail unexpectedly exported")
+        } catch PhoneImageError.unsupported {}
+        try require(await harmonyProvider.reads == 0, "Harmony core thumbnail read media")
+        harmony.toggleDownload(harmonyItem)
+        try require(await harmonyProvider.reads == 0, "Harmony checkbox must not export")
+        harmony.select(harmonyItem)
+        try await wait { !harmony.isBusy }
+        try require(await harmonyProvider.reads == 1 && harmony.preview != nil, "explicit Harmony selection must preview")
+        harmony.showPage(1)
+        try require(await harmonyProvider.reads == 1, "Harmony page turn exported unselected media")
+        harmony.clearDownloadSelection()
+        let harmonySecondItem = harmony.catalog!.items[1]
+        harmony.toggleDownload(harmonySecondItem)
+        let harmonyDownloadDirectory = directory.appending(path: "harmony-download")
+        try FileManager.default.createDirectory(at: harmonyDownloadDirectory, withIntermediateDirectories: false)
+        harmony.exportSelected(expectedRevision: harmony.revision, itemIDs: [harmonySecondItem.id], directory: harmonyDownloadDirectory)
+        try await wait { !harmony.isBusy }
+        try require(await harmonyProvider.reads == 2, "Harmony batch exported unselected media")
+        try require(try FileManager.default.contentsOfDirectory(atPath: harmonyDownloadDirectory.path).count == 1,
+                    "Harmony selected batch did not save exactly one file")
+        await harmonyProvider.suspendNextRead()
+        harmony.select(harmonyItem)
+        try await wait { await harmonyProvider.isSuspended }
+        harmony.cancel()
+        await harmonyProvider.resumeRead()
+        try await wait { !harmony.isBusy }
+        try require(harmony.feedback?.contains("temporary export") == true, "Harmony cancellation omitted cleanup limitation")
+        let oldHarmonyRevision = harmony.revision
+        harmony.load()
+        harmony.load()
+        try await wait { !harmony.isBusy }
+        try require(harmony.preview == nil && harmony.selectedDownloadIDs.isEmpty,
+                    "repeated Harmony load retained selection")
+        let staleHarmonyFolder = directory.appending(path: "stale-harmony")
+        harmony.exportSelected(expectedRevision: oldHarmonyRevision, itemIDs: [harmonyItem.id], directory: staleHarmonyFolder)
+        try require(!FileManager.default.fileExists(atPath: staleHarmonyFolder.path), "stale Harmony selection exported")
+        harmony.selectMediaKind(.video)
+        try await wait { !harmony.isBusy }
+        try require(harmony.catalog == nil && harmony.preview == nil, "Harmony mode reset retained catalog")
+        harmony.stop()
+        try await wait { !harmony.isBusy }
         print("PASS: image UI state — explicit reads, cancellation reconciliation, exact export, collision consent, stale save/confirmation, paged album/cache, selection priority, source cleanup, multi-selection, batch collision continuation and cancellation; no desktop UI launched")
     }
 
@@ -204,11 +287,17 @@ private actor ModelImageProvider: PhoneImageProviding {
     }
     func list(source: ImageSource, transportID: String,
               validateSession: @escaping @Sendable () async throws -> Void) async throws -> [ImageCandidate] {
+        try await list(source: source, mediaKind: .image, transportID: transportID, validateSession: validateSession)
+    }
+    func list(source: ImageSource, mediaKind: PhoneMediaKind, transportID: String,
+              validateSession: @escaping @Sendable () async throws -> Void) async throws -> [ImageCandidate] {
         try await validateSession()
         lists += 1
-        let root = source == .androidPictures ? "/sdcard/Pictures" : "/sdcard/DCIM"
-        let records = (0..<itemCount).map { "\(bytes.count)\0\(100)\0\(root)/photo-\($0).png\0" }.joined()
-        return try AndroidImageParser.parse(Data(records.utf8), source: source)
+        let root = source == .androidPictures || source == .harmonyMediaLibrary ? "/sdcard/Pictures" : "/sdcard/DCIM"
+        let suffix = mediaKind == .video ? "mp4" : "png"
+        let records = (0..<itemCount).map { "\(bytes.count)\0\(100)\0\(root)/photo-\($0).\(suffix)\0" }.joined()
+        return try AndroidImageParser.parse(Data(records.utf8),
+            source: source == .harmonyMediaLibrary ? .androidPictures : source, mediaKind: mediaKind)
     }
     func receive(_ image: ImageCandidate, transportID: String, partialURL: URL,
                  validateSession: @escaping @Sendable () async throws -> Void) async throws -> DeviceFileReceipt {

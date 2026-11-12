@@ -4,6 +4,22 @@ import Testing
 
 @Suite("Phone image metadata and scope")
 struct PhoneImageModelsTests {
+    @Test("media modes preserve image defaults and recognize video extensions case-insensitively")
+    func videoFiltering() throws {
+        let data = Data("12\0100\0/sdcard/DCIM/a.PNG\024000000\0200\0/sdcard/DCIM/movie.MOV\01\0300\0/sdcard/DCIM/note.txt\0".utf8)
+        let images = try AndroidImageParser.parse(data, source: .androidDCIM)
+        let videos = try AndroidImageParser.parse(data, source: .androidDCIM, mediaKind: .video)
+        #expect(images.map(\.displayName) == ["a.PNG"])
+        #expect(videos.map(\.displayName) == ["movie.MOV"])
+        #expect(videos.first?.mediaKind == .video)
+        #expect(videos.first?.byteLength == 24_000_000)
+        #expect(PhoneMediaKind.classify(filename: "clip.MP4") == .video)
+        #expect(PhoneMediaKind.classify(filename: "clip.txt") == nil)
+        #expect(PhoneMediaKind.video.maximumBytes == 512 * 1_024 * 1_024)
+        #expect(PhoneMediaKind.image.maximumBytes == 20 * 1_024 * 1_024)
+        #expect(ImageSource.androidMovies.root == "/sdcard/Movies")
+    }
+
     @Test("NUL records preserve Unicode, spaces and newlines without splitting a filename")
     func metadataRecords() throws {
         let data = Data("12\01720000000.5\0/sdcard/Pictures/截图 'a\nb'.PNG\0".utf8)

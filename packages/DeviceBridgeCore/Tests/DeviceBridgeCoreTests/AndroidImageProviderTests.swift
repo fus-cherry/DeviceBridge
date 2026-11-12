@@ -4,6 +4,39 @@ import Testing
 
 @Suite("Android image provider")
 struct AndroidImageProviderTests {
+    @Test("video reads use bounded binary chunks and reject truncated or changed originals")
+    func videoChunks() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "video-chunks-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let bytes = Data(repeating: 42, count: 4 * 1_024 * 1_024 + 7)
+        let fixture = directory.appending(path: "fixture")
+        try bytes.write(to: fixture)
+        let hash = try FileIntegrity.metadata(for: fixture).sha256
+        for truncated in [false, true] {
+            let runner = VideoCommandRunner(bytes: bytes, hash: hash, truncated: truncated)
+            let provider = AndroidImageProvider(adbURL: URL(fileURLWithPath: "/adb"), runner: runner)
+            let catalog = try await provider.list(source: .androidMovies, mediaKind: .video, transportID: "7")
+            let item = try #require(catalog.first)
+            let destination = directory.appending(path: UUID().uuidString)
+            if truncated {
+                await #expect(throws: PhoneImageError.sourceChanged) {
+                    try await provider.receive(item, transportID: "7", partialURL: destination)
+                }
+                #expect(!FileManager.default.fileExists(atPath: destination.path))
+            } else {
+                let receipt = try await provider.receive(item, transportID: "7", partialURL: destination)
+                #expect(receipt.sha256 == hash)
+                #expect(try Data(contentsOf: destination) == bytes)
+                let reads = await runner.requests.filter { $0.arguments.contains("exec-out") }
+                #expect(reads.count == 2)
+                #expect(reads.allSatisfy { $0.maximumOutputBytes <= 4 * 1_024 * 1_024 + 16 * 1_024 })
+                #expect(reads.allSatisfy { $0.arguments.last?.hasSuffix("2>/dev/null") == true })
+                #expect(reads.last?.arguments.last?.contains("skip=1") == true)
+            }
+        }
+    }
+
     @Test("a growing source is rejected before its bytes are written locally")
     func growingOriginal() async throws {
         let runner = ImageCommandRunner(growingRead: true)
@@ -128,5 +161,35 @@ private actor ImageCommandRunner: HostCommandRunning {
         }
         else { output = Data() }
         return HostCommandResult(exitCode: deny ? 1 : 0, standardOutput: output, standardError: Data())
+    }
+}
+
+private actor VideoCommandRunner: HostCommandRunning {
+    let bytes: Data
+    let hash: String
+    let truncated: Bool
+    var requests: [HostCommandRequest] = []
+    init(bytes: Data, hash: String, truncated: Bool) {
+        self.bytes = bytes; self.hash = hash; self.truncated = truncated
+    }
+    func run(_ request: HostCommandRequest) async throws -> HostCommandResult {
+        requests.append(request)
+        let args = request.arguments
+        let output: Data
+        if args.contains("realpath") {
+            let root = args.last == "'/sdcard/Movies'"
+            output = Data((root ? "/storage/emulated/0/Movies\n" : "/storage/emulated/0/Movies/clip.mp4\n").utf8)
+        } else if args.contains("find") {
+            output = Data("\(bytes.count)\0100\0/sdcard/Movies/clip.mp4\0".utf8)
+        } else if args.contains("stat") {
+            output = Data("\(bytes.count) 100 42 81a4\n".utf8)
+        } else if args.contains("sha256sum") {
+            output = Data("\(hash) clip.mp4\n".utf8)
+        } else if args.contains("exec-out") {
+            let start = args.last?.contains("skip=1") == true ? 4 * 1_024 * 1_024 : 0
+            let end = min(bytes.count, start + 4 * 1_024 * 1_024)
+            output = bytes.subdata(in: start..<(truncated ? end - 1 : end))
+        } else { output = Data() }
+        return HostCommandResult(exitCode: 0, standardOutput: output, standardError: Data())
     }
 }

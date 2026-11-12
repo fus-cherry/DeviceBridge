@@ -8,6 +8,7 @@ public enum ModelValidationError: Error, Equatable, Sendable {
 
 public enum DevicePlatform: String, Codable, Hashable, Sendable {
     case android
+    case harmonyOS = "harmonyos"
     case iOS = "ios"
 }
 
@@ -50,6 +51,7 @@ public enum TransportKind: String, Codable, Hashable, Sendable {
 
 public enum TransportSource: String, Codable, Hashable, Sendable {
     case adb
+    case hdc
     case coreDevice
 }
 
@@ -277,6 +279,7 @@ public enum OperationKind: String, Codable, Hashable, Sendable {
     case screenshot
     case fileSend
     case fileReceive
+    case packageInstall
     case memorySample
 }
 

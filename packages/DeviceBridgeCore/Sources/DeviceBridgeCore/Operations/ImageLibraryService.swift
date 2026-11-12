@@ -23,7 +23,7 @@ public actor ImageLibraryService {
         directory = sessionDirectory
     }
 
-    public func load(source: ImageSource) async throws -> ImageCatalog {
+    public func load(source: ImageSource, mediaKind: PhoneMediaKind = .image) async throws -> ImageCatalog {
         guard !busy else { throw PhoneImageError.busy }
         await clear()
         try Task.checkCancellation()
@@ -34,7 +34,7 @@ public actor ImageLibraryService {
         do {
             try await check(token, validity)
             let worker = Task {
-                try await provider.list(source: source, transportID: token.transportID,
+                try await provider.list(source: source, mediaKind: mediaKind, transportID: token.transportID,
                     validateSession: { [store] in
                         guard await store.canPublish(token) else { throw PhoneImageError.stale }
                         try validity.check()
@@ -68,7 +68,12 @@ public actor ImageLibraryService {
     }
 
     public func thumbnail(itemID: UUID) async throws -> Data {
-        try await readImage(itemID: itemID, retainOriginal: false).thumbnailPNG
+        // Videos are fetched only on explicit selection, never for gallery thumbnails.
+        // HarmonyOS mediatool creates a device-side copy on receive. Metadata browsing
+        // must not export photos implicitly, even if a caller bypasses the UI guard.
+        guard catalog?.source != .harmonyMediaLibrary,
+              locators[itemID]?.mediaKind != .video else { throw PhoneImageError.unsupported }
+        return try await readImage(itemID: itemID, retainOriginal: false).thumbnailPNG
     }
 
     public func preview(itemID: UUID) async throws -> ImagePreview {
@@ -80,11 +85,11 @@ public actor ImageLibraryService {
         guard !busy else { throw PhoneImageError.busy }
         guard let catalog, let locator = locators[itemID],
               let item = catalog.items.first(where: { $0.id == itemID }) else { throw PhoneImageError.stale }
-        guard item.byteLength > 0, item.byteLength <= 20 * 1_024 * 1_024 else { throw PhoneImageError.limitExceeded }
+        guard item.byteLength > 0, item.byteLength <= item.mediaKind.maximumBytes else { throw PhoneImageError.limitExceeded }
         let validity = beginRequest()
         defer { endRequest() }
         let token = try await store.beginOperation(.fileReceive)
-        let partial = directory.appending(path: UUID().uuidString + ".partial")
+        let partial = directory.appending(path: UUID().uuidString + (item.mediaKind == .video ? "." + (item.displayName as NSString).pathExtension : ".partial"))
         do {
             try await check(token, validity, catalog: catalog)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -104,12 +109,12 @@ public actor ImageLibraryService {
             guard actual.byteLength == item.byteLength, receipt.byteLength == actual.byteLength,
                   receipt.sha256 == actual.sha256 || (catalog.source == .iosUSBCameraImport && receipt.sha256 == nil)
                 else { throw PhoneImageError.integrityMismatch }
-            let decoded = try Self.decode(partial, includePreview: retainOriginal)
+            let decoded = try item.mediaKind == .video ? Self.decodeVideo(partial) : Self.decode(partial, includePreview: retainOriginal)
             try await check(token, validity, catalog: catalog)
             let result = ImagePreview(id: UUID(), catalogID: catalog.id, item: item,
                 pixelWidth: decoded.width, pixelHeight: decoded.height, mediaType: decoded.type,
                 thumbnailPNG: decoded.thumbnail, previewPNG: decoded.preview,
-                sourceHashVerified: receipt.sha256 != nil)
+                sourceHashVerified: receipt.sha256 != nil, videoURL: item.mediaKind == .video ? partial : nil)
             if retainOriginal {
                 if let original { try? FileManager.default.removeItem(at: original) }
                 original = partial
@@ -195,6 +200,13 @@ public actor ImageLibraryService {
             guard catalog?.id == expected.id, token.deviceIdentity == expected.sourceDevice,
                   token.sessionGeneration == expected.sessionGeneration else { throw PhoneImageError.stale }
         }
+    }
+
+    /// Codec probing stays in AVPlayer, outside the transfer actor. Exporting an original
+    /// never waits for a decoder; unknown codecs remain downloadable without eager reads.
+    private static func decodeVideo(_ url: URL) throws -> (width: Int, height: Int, type: String, thumbnail: Data, preview: Data) {
+        try Task.checkCancellation()
+        return (0, 0, "Video", Data(), Data())
     }
 
     /// ImageIO runs on this service actor, never on the UI actor. Original bytes are not re-encoded.

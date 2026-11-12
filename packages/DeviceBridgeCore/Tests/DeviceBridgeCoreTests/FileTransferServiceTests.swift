@@ -21,6 +21,20 @@ struct FileTransferServiceTests {
         ).relativePath == "Documents/a.txt")
     }
 
+    @Test("cancelled hashing stops before reading the source")
+    func cancelledHash() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "hash-cancel-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appending(path: "source")
+        try Data(repeating: 42, count: 1_024).write(to: file)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try FileIntegrity.metadata(for: file)
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+    }
+
     @Test("receive validates length and hash before atomically publishing")
     func receivePublishes() async throws {
         let fixture = try await TransferFixture.make()
@@ -103,6 +117,35 @@ struct FileTransferServiceTests {
         #expect(await provider.receiveCount == 0)
     }
 
+    @Test("a destination created during receive is never overwritten without approval")
+    func replacementRace() async throws {
+        let fixture = try await TransferFixture.make()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let destination = fixture.directory.appending(path: "created-during-download.txt")
+        let provider = FileProviderDouble(receiveData: Data("remote".utf8), createDestination: destination)
+        let source = try DeviceFileLocation(scope: .androidSharedDownloads, relativePath: "remote.txt")
+        let outcome = await FileTransferService(store: fixture.store, provider: provider)
+            .receive(source: source, destinationURL: destination, replaceExisting: false)
+        #expect(outcome.failure?.code == .restricted)
+        #expect(try String(contentsOf: destination, encoding: .utf8) == "existing")
+        #expect(try partialFiles(in: fixture.directory).isEmpty)
+    }
+
+    @Test("a captured service cannot start a receive on another selected device")
+    func capturedSessionRejectsNewDevice() async throws {
+        let fixture = try await TransferFixture.make(includeSecondDevice: true)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let session = await fixture.store.snapshot().session
+        let provider = FileProviderDouble(receiveData: Data("remote".utf8))
+        let service = FileTransferService(store: fixture.store, provider: provider, session: session)
+        _ = try await fixture.store.select(fixture.second!.identity)
+        let source = try DeviceFileLocation(scope: .androidSharedDownloads, relativePath: "remote.txt")
+        let outcome = await service.receive(source: source,
+            destinationURL: fixture.directory.appending(path: "file.txt"), replaceExisting: false)
+        #expect(outcome.artifact == nil)
+        #expect(await provider.receiveCount == 0)
+    }
+
     @Test("device switch rejects a late send receipt")
     func switchRejectsLateSend() async throws {
         let fixture = try await TransferFixture.make(includeSecondDevice: true)
@@ -171,12 +214,14 @@ private actor FileProviderDouble: DeviceFileProviding {
     private let receiveData: Data
     private let reportedHash: String?
     private let cancelReceive: Bool
+    private let createDestination: URL?
     private(set) var receiveCount = 0
 
-    init(receiveData: Data, reportedHash: String? = nil, cancelReceive: Bool = false) {
+    init(receiveData: Data, reportedHash: String? = nil, cancelReceive: Bool = false, createDestination: URL? = nil) {
         self.receiveData = receiveData
         self.reportedHash = reportedHash
         self.cancelReceive = cancelReceive
+        self.createDestination = createDestination
     }
 
     func send(
@@ -198,6 +243,7 @@ private actor FileProviderDouble: DeviceFileProviding {
     ) async throws -> DeviceFileReceipt {
         receiveCount += 1
         if cancelReceive { throw CancellationError() }
+        if let createDestination { try Data("existing".utf8).write(to: createDestination) }
         try receiveData.write(to: localPartialURL)
         let metadata = try FileIntegrity.metadata(for: localPartialURL)
         return DeviceFileReceipt(

@@ -2,7 +2,7 @@
 
 > **AI 生成声明：本项目由 AI 自主生成。**
 
-面向 Flutter 开发者的原生 macOS 设备调试工具。在一个窗口中连接 Android 与 iPhone，处理剪切板、截图、图片、文件和 Flutter 内存数据；被调试的 Flutter 项目无需添加依赖或修改代码。
+面向 Flutter 开发者的原生 macOS 设备调试工具。在一个窗口中连接 Android 与 iPhone，处理剪切板、截图、图片、视频、文件和 Flutter 内存数据，并实验性接入鸿蒙 HDC 设备信息、文件与 HAP 安装；被调试的 Flutter 项目无需添加依赖或修改代码。
 
 [下载 Release](https://github.com/fus-cherry/DeviceBridge/releases) · [开发与测试](docs/development.md) · [自动构建与发布](docs/releasing.md) · [验收指南](specs/001-device-debug-bridge/quickstart.md)
 
@@ -14,9 +14,13 @@
 | 剪切板 | 读取、写入当前文本，最多 1 MiB UTF-8；支持完整编辑、复制全部及保存 TXT，不读取历史记录。 |
 | 截图 | 捕获设备屏幕、预览、复制和保存 PNG；iOS 需先准备并签名设备端 runner。 |
 | 图片 | 按需加载每页最多 24 张缩略图，预览并下载原图；Android 限 DCIM、Pictures、Download，iPhone 限 USB 相机导入可访问内容。 |
-| 文件传输 | Android 下载目录及可调试应用数据；iOS 由 CoreDevice 允许的临时目录、应用/应用组容器和只读崩溃日志。受保护路径不可任意访问。 |
+| 视频 | Android 共享媒体目录、iPhone USB 导入可见的本地视频；按需下载与播放，单个最大 512 MiB。编码播放支持取决于 macOS。新增路径尚未真机验收。 |
+| 文件传输 | 新增目录浏览和文件选择。Android 下载目录及可调试应用数据；iOS 由 CoreDevice 允许的临时目录、应用/应用组容器和只读崩溃日志。受保护路径不可任意访问。 |
+| 鸿蒙（实验性） | HDC 设备发现、基础信息、目录浏览与下载、明确 OS 用户的文档发送、调试目录文件发送、HAP 安装/更新。APK 只能发送，不能通过 HDC 原生安装。新增 mediatool 能力检测、图片/视频列表及选中导出；依赖设备工具能力，不支持隐藏资产，云端资源可用性不保证。尚未真机验收。 |
 | Flutter 内存 | 发现目标应用的 VM Service，监测 Dart heap/external 数据；Android 另有系统内存信息。Dart 指标不等同于 iOS 应用总内存。 |
 | 界面语言 | 跟随系统、简体中文、English；右上角即时切换并保存选择，不改变设备内容或当前会话。 |
+
+新增鸿蒙、视频和文件浏览代码的范围与未验证项见[接入说明](docs/harmonyos-media-files.md)；HAP 安装、APK 发送和使用限制见[HDC 安装与发送](docs/harmonyos-hdc-install-send.md)。媒体库的新能力及限制见 [mediatool 接入](docs/harmonyos-mediatool.md)。当前分支的实现不能视为已发布版本或真机验证通过。
 
 ## 下载与安装
 

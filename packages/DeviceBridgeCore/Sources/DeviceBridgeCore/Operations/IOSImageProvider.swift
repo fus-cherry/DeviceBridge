@@ -44,6 +44,10 @@ public final class IOSImageProvider: PhoneImageProviding {
     }
     public func list(source: ImageSource, transportID: String,
                      validateSession: @escaping @Sendable () async throws -> Void) async throws -> [ImageCandidate] {
+        try await list(source: source, mediaKind: .image, transportID: transportID, validateSession: validateSession)
+    }
+    public func list(source: ImageSource, mediaKind: PhoneMediaKind, transportID: String,
+                     validateSession: @escaping @Sendable () async throws -> Void) async throws -> [ImageCandidate] {
         guard source == .iosUSBCameraImport, identity.platform == .iOS,
               identity.stability == .stable else { throw PhoneImageError.unsupported }
         guard transportID == self.transportID else { throw PhoneImageError.stale }
@@ -58,7 +62,7 @@ public final class IOSImageProvider: PhoneImageProviding {
         let session = IOSPhotoSession(udid: identity.rawValue, discovery: discovery)
         connection = session
         do {
-            let entries = try await session.open(validate: validateSession)
+            let entries = try await session.open(mediaKind: mediaKind, validate: validateSession)
             try Task.checkCancellation()
             try await validateSession()
             guard revision == expected, connection === session else { throw PhoneImageError.stale }
@@ -164,7 +168,7 @@ fileprivate final class IOSPhotoSession: NSObject, @preconcurrency ICCameraDevic
     private var teardown: Task<Bool, Never>?
     init(udid: String, discovery: IOSPhotoDiscovery) { self.udid = udid; self.discovery = discovery }
 
-    func open(validate: @escaping @Sendable () async throws -> Void) async throws -> [ImageCandidate] {
+    func open(mediaKind: PhoneMediaKind, validate: @escaping @Sendable () async throws -> Void) async throws -> [ImageCandidate] {
         try await discovery.prepare(self)
         for _ in 0..<100 {
             try await validateCurrent(validate)
@@ -199,8 +203,7 @@ fileprivate final class IOSPhotoSession: NSObject, @preconcurrency ICCameraDevic
         var metadataBytes = 0
         for file in files {
             guard let name = file.name else { continue }
-            let suffix = (name as NSString).pathExtension.lowercased()
-            guard ["png", "jpg", "jpeg", "heic", "heif"].contains(suffix) else { continue }
+            guard PhoneMediaKind.classify(filename: name) == mediaKind else { continue }
             guard !name.contains("/"), !name.contains("\0"), !name.contains("\\"),
                   file.fileSize >= 0 else { throw PhoneImageError.malformedMetadata }
             metadataBytes += name.utf8.count + 128
@@ -223,7 +226,7 @@ fileprivate final class IOSPhotoSession: NSObject, @preconcurrency ICCameraDevic
         guard image.source == .iosUSBCameraImport, let (original, file) = assets[image.path],
               original == image, file.fileSize == image.byteLength,
               camera?.mediaFiles?.contains(where: { $0 === file }) == true else { throw PhoneImageError.sourceChanged }
-        guard image.byteLength > 0 && image.byteLength <= 20 * 1_024 * 1_024 else { throw PhoneImageError.limitExceeded }
+        guard image.byteLength > 0 && image.byteLength <= image.mediaKind.maximumBytes else { throw PhoneImageError.limitExceeded }
         guard !FileManager.default.fileExists(atPath: destination.path) else { throw PhoneImageError.destinationExists }
         let request = try IOSPhotoDownload(parent: destination.deletingLastPathComponent(),
             suffix: (image.displayName as NSString).pathExtension.lowercased())
@@ -236,7 +239,7 @@ fileprivate final class IOSPhotoSession: NSObject, @preconcurrency ICCameraDevic
             Task { @MainActor in request.complete(filename: filename, errorCode: (error as NSError?)?.code) }
         }
         do {
-            for _ in 0..<300 {
+            for _ in 0..<(image.mediaKind == .video ? 3_000 : 300) {
                 try await validateCurrent(validate)
                 try checkContent()
                 try request.checkByteLimit(image.byteLength)
@@ -386,7 +389,7 @@ final class IOSPhotoDownload {
     private var finished = false
     private(set) var result: Result<Void, PhoneImageError>?
     init(parent: URL, suffix: String) throws {
-        guard ["png", "jpg", "jpeg", "heic", "heif"].contains(suffix) else { throw PhoneImageError.unsupported }
+        guard PhoneMediaKind.classify(filename: "asset." + suffix) != nil else { throw PhoneImageError.unsupported }
         directory = parent.appending(path: "ios-download-\(UUID())")
         file = directory.appending(path: "asset.\(suffix)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,

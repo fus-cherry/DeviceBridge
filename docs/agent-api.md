@@ -64,7 +64,7 @@ JSON
 
 没有当前会话时，`result` 为 `{"status":"no_active_session"}`。已有会话时，`result.status` 为 `active`，并带 `sessionKey`、`device` 和 `capabilities`：
 
-- `device` 包含 `name`、`identifier`、`platform`（`android` 或 `ios`）、`transportID` 和 `generation`。
+- `device` 包含 `name`、`identifier`、`platform`（`android`、`ios` 或实验性的 `harmonyos`）、`transportID` 和 `generation`。
 - `capabilities.deviceInformation` 与 `capabilities.androidShell` 各包含布尔 `available` 和说明 `reason`。状态只反映当前可调用性；调用时仍会重新准入，可能返回 `busy`。
 
 读取设备信息（Android 与 iOS 使用相同方法）：

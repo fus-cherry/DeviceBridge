@@ -6,17 +6,21 @@ public actor AndroidImageProvider: PhoneImageProviding {
     public init(adbURL: URL, runner: any HostCommandRunning) { self.adbURL = adbURL; self.runner = runner }
     public func list(source: ImageSource, transportID: String,
                      validateSession: @escaping @Sendable () async throws -> Void = {}) async throws -> [ImageCandidate] {
+        try await list(source: source, mediaKind: .image, transportID: transportID, validateSession: validateSession)
+    }
+    public func list(source: ImageSource, mediaKind: PhoneMediaKind, transportID: String,
+                     validateSession: @escaping @Sendable () async throws -> Void = {}) async throws -> [ImageCandidate] {
         guard let root = source.root else { throw PhoneImageError.unsupported }
         let context = ReadContext(transportID: transportID, validate: validateSession)
         _ = try await canonicalRoot(source, context)
         let result = try await command(context, ["shell", "find", root, "-type", "f", "-printf", "'%s\\0%T@\\0%p\\0'"],
                                        timeout: .seconds(20), limit: 4 * 1_024 * 1_024)
         guard result.exitCode == 0 else { throw PhoneImageError.scopeUnavailable }
-        return try AndroidImageParser.parse(result.standardOutput, source: source)
+        return try AndroidImageParser.parse(result.standardOutput, source: source, mediaKind: mediaKind)
     }
     public func receive(_ image: ImageCandidate, transportID: String, partialURL: URL,
                         validateSession: @escaping @Sendable () async throws -> Void = {}) async throws -> DeviceFileReceipt {
-        guard image.byteLength > 0, image.byteLength <= 20 * 1_024 * 1_024 else { throw PhoneImageError.limitExceeded }
+        guard image.byteLength > 0, image.byteLength <= image.mediaKind.maximumBytes else { throw PhoneImageError.limitExceeded }
         guard !FileManager.default.fileExists(atPath: partialURL.path) else { throw PhoneImageError.destinationExists }
         let context = ReadContext(transportID: transportID, validate: validateSession)
         let root = try await canonicalRoot(image.source, context)
@@ -31,11 +35,35 @@ public actor AndroidImageProvider: PhoneImageProviding {
             // Raw stdout preserves original bytes. Read one byte beyond the catalog length
             // to detect growth, never an uncapped adb pull into the Mac filesystem.
             // Unlike `adb shell`, exec-out escapes each operand itself. Do not double-quote it.
-            let result = try await command(context, ["exec-out", "head", "-c", String(image.byteLength + 1), path],
-                timeout: .seconds(30), limit: Int(image.byteLength) + 1 + 16 * 1_024)
-            guard result.exitCode == 0 else { throw PhoneImageError.scopeUnavailable }
-            guard result.standardOutput.count == image.byteLength else { throw PhoneImageError.sourceChanged }
-            try result.standardOutput.write(to: partialURL, options: .withoutOverwriting)
+            if image.mediaKind == .video {
+                // Bound each host stdout buffer to 4 MiB, rather than buffering a movie in RAM.
+                try Data().write(to: partialURL, options: .withoutOverwriting)
+                let handle = try FileHandle(forWritingTo: partialURL)
+                defer { try? handle.close() }
+                let chunk: Int64 = 4 * 1_024 * 1_024
+                var offset: Int64 = 0
+                let deadline = ContinuousClock.now.advanced(by: .seconds(600))
+                while offset < image.byteLength {
+                    guard ContinuousClock.now < deadline else { throw HostCommandError.timedOut }
+                    // exec-out can merge stderr. Never mix dd's transfer statistics into media bytes.
+                    let script = "exec dd if=\(Self.quote(path)) bs=\(chunk) skip=\(offset / chunk) count=1 2>/dev/null"
+                    let result = try await command(context, ["exec-out", "sh", "-c", script],
+                        timeout: .seconds(60), limit: Int(chunk) + 16 * 1_024)
+                    guard result.exitCode == 0,
+                          result.standardOutput.count == min(chunk, image.byteLength - offset) else {
+                        throw PhoneImageError.sourceChanged
+                    }
+                    try handle.write(contentsOf: result.standardOutput)
+                    offset += Int64(result.standardOutput.count)
+                }
+                try handle.synchronize()
+            } else {
+                let result = try await command(context, ["exec-out", "head", "-c", String(image.byteLength + 1), path],
+                    timeout: .seconds(30), limit: Int(image.byteLength) + 1 + 16 * 1_024)
+                guard result.exitCode == 0 else { throw PhoneImageError.scopeUnavailable }
+                guard result.standardOutput.count == image.byteLength else { throw PhoneImageError.sourceChanged }
+                try result.standardOutput.write(to: partialURL, options: .withoutOverwriting)
+            }
             _ = try await canonicalPath(image, root: root, context: context)
             let after = try await metadata(path, context)
             guard before == after else { throw PhoneImageError.sourceChanged }
@@ -89,7 +117,7 @@ public actor AndroidImageProvider: PhoneImageProviding {
         let result = try await command(context, ["shell", "stat", "-c", "'%s %Y %i %f'", Self.quote(path)])
         let fields = result.standardOutputString.split(whereSeparator: \.isWhitespace)
         guard result.exitCode == 0, fields.count == 4, let length = Int64(fields[0]), length > 0,
-              length <= 20 * 1_024 * 1_024, let modified = Int64(fields[1]),
+              length <= PhoneMediaKind.video.maximumBytes, let modified = Int64(fields[1]),
               let inode = UInt64(fields[2]), let mode = UInt32(fields[3], radix: 16), mode & 0xf000 == 0x8000 else {
             throw PhoneImageError.sourceChanged
         }
@@ -97,7 +125,7 @@ public actor AndroidImageProvider: PhoneImageProviding {
     }
 
     private func checksum(_ path: String, _ context: ReadContext) async throws -> String {
-        let result = try await command(context, ["shell", "sha256sum", Self.quote(path)])
+        let result = try await command(context, ["shell", "sha256sum", Self.quote(path)], timeout: .seconds(120))
         guard result.exitCode == 0, var hash = result.standardOutputString.split(whereSeparator: \.isWhitespace).first.map(String.init) else {
             throw PhoneImageError.integrityMismatch
         }

@@ -16,6 +16,7 @@ public enum DeviceCommandProbeOutcome: Sendable, Equatable {
 }
 
 public struct DeviceCommandProbe: Sendable {
+    private let hdcURL: URL?
     private let adbURL: URL?
     private let xcrunURL: URL?
     private let runner: any HostCommandRunning
@@ -23,8 +24,10 @@ public struct DeviceCommandProbe: Sendable {
     public init(
         adbURL: URL?,
         xcrunURL: URL?,
-        runner: any HostCommandRunning
+        runner: any HostCommandRunning,
+        hdcURL: URL? = nil
     ) {
+        self.hdcURL = hdcURL
         self.adbURL = adbURL
         self.xcrunURL = xcrunURL
         self.runner = runner
@@ -51,6 +54,16 @@ public struct DeviceCommandProbe: Sendable {
                 arguments: ["-t", transportID, "get-state"],
                 timeout: .seconds(5),
                 maximumOutputBytes: 4_096
+            )
+        case .harmonyOS:
+            guard !transportID.isEmpty, !transportID.hasPrefix("-"), !transportID.contains("\0") else {
+                return .unavailable(OperationFailure(code: .disconnected, safeMessage: "No valid HDC target is selected."))
+            }
+            guard let hdcURL else { return missingTool("HDC") }
+            request = HostCommandRequest(
+                executableURL: hdcURL,
+                arguments: ["-t", transportID, "shell", "echo devicebridge-ready"],
+                timeout: .seconds(5), maximumOutputBytes: 4_096
             )
         case .iOS:
             guard let xcrunURL else { return missingTool("Xcode command-line tools") }
@@ -89,6 +102,10 @@ public struct DeviceCommandProbe: Sendable {
                         recoveryAction: "Refresh the device list and retry."
                     ))
                 }
+            }
+            if device.identity.platform == .harmonyOS,
+               result.standardOutputString.trimmingCharacters(in: .whitespacesAndNewlines) != "devicebridge-ready" {
+                return .unavailable(OperationFailure(code: .disconnected, safeMessage: "HDC did not confirm shell access. Unlock and authorize the device."))
             }
             return .ready(checkedAt: checkedAt)
         } catch HostCommandError.cancelled {

@@ -119,7 +119,12 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     @Published private(set) var fileTransferFeedback: InterfaceMessage?
     @Published private(set) var latestTransferArtifact: TransferArtifact?
     @Published private(set) var isTransferringFile = false
+    @Published private(set) var isInstallingHarmonyPackage = false
+    @Published private(set) var harmonyPackageFeedback: InterfaceMessage?
     @Published private(set) var imageBrowser: PhoneImagesViewModel?
+    @Published private(set) var fileEntries: [DeviceFileEntry] = []
+    @Published private(set) var isBrowsingFiles = false
+    @Published private(set) var fileBrowserFeedback: InterfaceMessage?
     @Published private var memoryCapabilityState = SessionCapabilityState(
         selectionRevision: 0, readiness: .idle)
     @Published private(set) var targetApplications: [TargetApplication] = []
@@ -182,6 +187,13 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     private var clipboardOperationTask: Task<Void, Never>?
     private var screenshotOperationTask: Task<Void, Never>?
     private var fileTransferTask: Task<Void, Never>?
+    private var fileTransferRevision = 0
+    private var harmonyPackageTask: Task<Void, Never>?
+    private var harmonyPackageService: HarmonyPackageInstallService?
+    private var harmonyPackageRevision = 0
+    private var fileBrowserTask: Task<Void, Never>?
+    private var fileBrowserRevision = 0
+    private var fileBrowserService: DeviceFileBrowserService?
     private var memoryPreparationTask: Task<Void, Never>?
     private var memoryPreparationRevision = 0
     private var iosMemorySession: ConnectionSession?
@@ -192,6 +204,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     private var keepAliveActionTask: Task<Void, Never>?
     private var keepAliveObservationTask: Task<Void, Never>?
     private var adbURL: URL?
+    private var hdcURL: URL?
     private var xcrunURL: URL?
     private var androidHelperManager: AndroidHelperManager?
     private var iosRunnerManager: (any IOSRunnerManaging)?
@@ -411,10 +424,14 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     var screenshotReadinessDetail: String? { screenshotAction.detail }
 
     var fileTransferAction: CapabilityActionPresentation {
-        actionPresentation(for: fileTransferReadiness, busy: isTransferringFile)
+        actionPresentation(for: fileTransferReadiness, busy: isTransferringFile || isInstallingHarmonyPackage)
     }
 
     var isFileTransferReady: Bool { fileTransferAction.canStart }
+    var fileTransferSelectionRevision: Int { selectionRevision }
+    func canUseFileSelection(revision: Int) -> Bool {
+        revision == selectionRevision && isFileTransferReady && selectedDevice != nil
+    }
     var canUseImageBrowser: Bool { connectionActionBlock == nil }
     var canUseAndroidShell: Bool { connectionActionBlock == nil }
     var canUseDeviceInformation: Bool { connectionActionBlock == nil }
@@ -567,7 +584,11 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         currentScreenshotArtifact = nil
         screenshotFeedback = nil
         isCapturingScreenshot = false
+        resetHarmonyPackageInstall()
+        fileTransferRevision += 1
         fileTransferService = nil
+        fileBrowserService = nil
+        clearFileBrowser()
         fileTransferReadiness = .idle
         fileTransferFeedback = nil
         latestTransferArtifact = nil
@@ -629,6 +650,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         var candidates: [TransportCandidate] = []
         var discoveryDiagnostics: [String] = []
         var resolvedADBURL: URL?
+        var resolvedHDCURL: URL?
         var resolvedXcrunURL: URL?
         switch preflight.resolve(.adb, searchDirectories: searchDirectories) {
         case let .available(adbURL):
@@ -640,6 +662,20 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                 ).discover(observedAt: Date())
             } catch {
                 discoveryDiagnostics.append("Android discovery failed. Check ADB authorization and retry.")
+            }
+        case let .missing(message, _):
+            discoveryDiagnostics.append(message)
+        }
+
+        guard !Task.isCancelled, refreshRevision == revision else { return }
+        switch preflight.resolve(.hdc, searchDirectories: searchDirectories) {
+        case let .available(hdcURL):
+            resolvedHDCURL = hdcURL
+            do {
+                candidates += try await HarmonyDeviceDiscoveryService(hdcURL: hdcURL, runner: runner)
+                    .discover(observedAt: Date())
+            } catch {
+                discoveryDiagnostics.append("HarmonyOS discovery failed. Check HDC and device debugging authorization.")
             }
         case let .missing(message, _):
             discoveryDiagnostics.append(message)
@@ -666,6 +702,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         let snapshot = await store.snapshot()
         guard !Task.isCancelled, refreshRevision == revision else { return }
         adbURL = resolvedADBURL
+        hdcURL = resolvedHDCURL
         xcrunURL = resolvedXcrunURL
         if diagnostics != discoveryDiagnostics { diagnostics = discoveryDiagnostics }
         publishInventory(snapshot)
@@ -827,7 +864,11 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         currentScreenshotArtifact = nil
         screenshotFeedback = nil
         isCapturingScreenshot = false
+        resetHarmonyPackageInstall()
+        fileTransferRevision += 1
         fileTransferService = nil
+        fileBrowserService = nil
+        clearFileBrowser()
         fileTransferReadiness = .idle
         fileTransferFeedback = nil
         latestTransferArtifact = nil
@@ -897,7 +938,8 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                     let outcome = await DeviceCommandProbe(
                         adbURL: self.adbURL,
                         xcrunURL: self.xcrunURL,
-                        runner: self.runner
+                        runner: self.runner,
+                        hdcURL: self.hdcURL
                     ).probe(device)
                     guard !Task.isCancelled else { return }
                     guard case let .ready(checkedAt) = outcome else {
@@ -943,7 +985,9 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                 }
                 prepareFileTransfer(for: device, session: snapshot.session)
                 startMemoryPreparation(for: device)
-                if device.identity.platform == .iOS,
+                if device.identity.platform == .harmonyOS {
+                    clipboardReadiness = .actionRequired("HarmonyOS clipboard access is not supported in this version.")
+                } else if device.identity.platform == .iOS,
                    !arguments.contains("--fixture-devices"),
                    case .actionRequired = screenshotReadiness {
                     clipboardReadiness = .actionRequired(
@@ -1128,16 +1172,56 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         }
     }
 
+    var canBrowseFiles: Bool { isFileTransferReady && fileBrowserService != nil && !isTransferringFile }
+
+    /// Browsing starts only in response to the user's Load/Open action.
+    func browseFiles(directory: DeviceDirectoryLocation) {
+        guard canBrowseFiles, let service = fileBrowserService else { return }
+        clearFileBrowser()
+        let revision = fileBrowserRevision
+        let selection = selectionRevision
+        isBrowsingFiles = true
+        fileBrowserTask = Task { [weak self] in
+            let outcome = await service.list(directory: directory)
+            guard let self, !Task.isCancelled, self.fileBrowserRevision == revision,
+                  self.selectionRevision == selection else { return }
+            self.isBrowsingFiles = false
+            self.fileBrowserTask = nil
+            switch outcome {
+            case let .listed(entries):
+                self.fileEntries = entries
+                if entries.isEmpty { self.fileBrowserFeedback = "This folder is empty." }
+            case let .failure(failure):
+                self.fileBrowserFeedback = InterfaceMessage(failure.safeMessage)
+            case .stale:
+                self.fileBrowserFeedback = "Device selection changed. Load the folder again."
+            }
+        }
+    }
+
+    func clearFileBrowser() {
+        fileBrowserRevision += 1
+        fileBrowserTask?.cancel()
+        fileBrowserTask = nil
+        isBrowsingFiles = false
+        fileEntries = []
+        fileBrowserFeedback = nil
+    }
+
     func sendFile(
         sourceURL: URL,
         destination: DeviceFileLocation,
         replaceExisting: Bool
     ) {
         guard fileTransferAction.canStart else { return }
-        guard let service = fileTransferService, !isTransferringFile else { return }
-        fileTransferTask?.cancel()
+        guard let service = fileTransferService, !isTransferringFile, !isBrowsingFiles else { return }
+        fileTransferRevision += 1
+        let request = fileTransferRevision
         isTransferringFile = true
+        latestTransferArtifact = nil
         fileTransferFeedback = nil
+        let revision = selectionRevision
+        let isHarmonySend = selectedDevice?.identity.platform == .harmonyOS
         fileTransferTask = Task { [weak self] in
             guard let self else { return }
             let outcome = await service.send(
@@ -1145,7 +1229,15 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                 destination: destination,
                 replaceExisting: replaceExisting
             )
-            guard !Task.isCancelled else { return }
+            guard self.selectionRevision == revision, self.fileTransferRevision == request else { return }
+            if Task.isCancelled {
+                self.isTransferringFile = false
+                self.fileTransferTask = nil
+                self.fileTransferFeedback = isHarmonySend
+                    ? "Transfer interrupted. The device may already contain the file; inspect it before retrying."
+                    : "Transfer cancelled"
+                return
+            }
             self.applyFileTransferOutcome(outcome)
             self.isTransferringFile = false
             self.fileTransferTask = nil
@@ -1158,10 +1250,13 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         replaceExisting: Bool
     ) {
         guard fileTransferAction.canStart else { return }
-        guard let service = fileTransferService, !isTransferringFile else { return }
-        fileTransferTask?.cancel()
+        guard let service = fileTransferService, !isTransferringFile, !isBrowsingFiles else { return }
+        fileTransferRevision += 1
+        let request = fileTransferRevision
         isTransferringFile = true
+        latestTransferArtifact = nil
         fileTransferFeedback = nil
+        let revision = selectionRevision
         fileTransferTask = Task { [weak self] in
             guard let self else { return }
             let outcome = await service.receive(
@@ -1169,7 +1264,13 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                 destinationURL: destinationURL,
                 replaceExisting: replaceExisting
             )
-            guard !Task.isCancelled else { return }
+            guard self.selectionRevision == revision, self.fileTransferRevision == request else { return }
+            if Task.isCancelled {
+                self.isTransferringFile = false
+                self.fileTransferTask = nil
+                self.fileTransferFeedback = "Transfer cancelled"
+                return
+            }
             self.applyFileTransferOutcome(outcome)
             self.isTransferringFile = false
             self.fileTransferTask = nil
@@ -1177,13 +1278,68 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     }
 
     func cancelFileTransfer() {
+        guard isTransferringFile else { return }
+        latestTransferArtifact = nil
         fileTransferTask?.cancel()
-        fileTransferTask = nil
-        isTransferringFile = false
-        fileTransferFeedback = "Transfer cancelled"
+        // Do not allow an install or another transfer while cancellation is still draining.
+        fileTransferFeedback = "Cancelling transfer…"
+    }
+
+    var canInstallHarmonyPackage: Bool {
+        selectedDevice?.identity.platform == .harmonyOS && harmonyPackageService != nil
+            && isFileTransferReady && !isBrowsingFiles
+    }
+
+    func canUseHarmonyPackageSelection(revision: Int) -> Bool {
+        revision == selectionRevision && canInstallHarmonyPackage
+    }
+
+    func installHarmonyPackage(packageURL: URL, replaceExisting: Bool) {
+        guard canInstallHarmonyPackage, let service = harmonyPackageService else { return }
+        harmonyPackageRevision += 1
+        let request = harmonyPackageRevision
+        let selection = selectionRevision
+        harmonyPackageFeedback = "Installing HAP…"
+        isInstallingHarmonyPackage = true
+        harmonyPackageTask = Task { [weak self] in
+            let outcome = await service.install(packageURL: packageURL, replaceExisting: replaceExisting)
+            guard let self, self.selectionRevision == selection,
+                  self.harmonyPackageRevision == request else { return }
+            self.isInstallingHarmonyPackage = false
+            self.harmonyPackageTask = nil
+            guard !Task.isCancelled else {
+                self.harmonyPackageFeedback = "Installation cancelled. Check the device before retrying; installation may have completed."
+                return
+            }
+            switch outcome {
+            case .installed:
+                self.harmonyPackageFeedback = "HAP installed"
+            case let .failure(failure):
+                self.harmonyPackageFeedback = InterfaceMessage(failure.safeMessage)
+            case .stale:
+                self.harmonyPackageFeedback = "Device selection changed; the installation result was discarded."
+            }
+        }
+    }
+
+    func cancelHarmonyPackageInstall() {
+        guard isInstallingHarmonyPackage else { return }
+        harmonyPackageTask?.cancel()
+        // Keep actions blocked until the cancelled command has actually returned.
+        harmonyPackageFeedback = "Cancelling installation…"
+    }
+
+    private func resetHarmonyPackageInstall() {
+        harmonyPackageRevision += 1
+        harmonyPackageTask?.cancel()
+        harmonyPackageTask = nil
+        harmonyPackageService = nil
+        isInstallingHarmonyPackage = false
+        harmonyPackageFeedback = nil
     }
 
     func reportFileTransferInputError(_ message: String) {
+        latestTransferArtifact = nil
         fileTransferFeedback = InterfaceMessage(message)
     }
 
@@ -1512,6 +1668,10 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
             return
         }
 
+        if device.identity.platform == .harmonyOS {
+            memoryReadiness = .actionRequired("HarmonyOS memory monitoring is not supported in this version.")
+            return
+        }
         if device.identity.platform == .iOS {
             await prepareIOSMemoryApplications(for: device)
             return
@@ -1567,6 +1727,19 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                 provider: AndroidImageProvider(adbURL: adbURL, runner: runner),
                 sessionDirectory: FileManager.default.temporaryDirectory.appending(path: "devicebridge-images-\(UUID())")))
         }
+        if device.identity.platform == .harmonyOS, !arguments.contains("--fixture-devices"),
+           let hdcURL, let session {
+            harmonyPackageService = HarmonyPackageInstallService(store: store,
+                installer: HDCPackageInstaller(hdcURL: hdcURL, runner: runner), session: session)
+        }
+        if device.identity.platform == .harmonyOS, !arguments.contains("--fixture-devices"),
+           let hdcURL, let session {
+            // No catalog read or device-side export until an explicit media action.
+            imageBrowser = PhoneImagesViewModel(service: ImageLibraryService(store: store, session: session,
+                provider: HarmonyMediaProvider(hdcURL: hdcURL, runner: runner),
+                sessionDirectory: FileManager.default.temporaryDirectory.appending(path: "devicebridge-harmony-media-\(UUID())")),
+                sources: [.harmonyMediaLibrary])
+        }
         let provider: (any DeviceFileProviding)?
         if arguments.contains("--fixture-devices") {
             provider = FixtureFileProvider()
@@ -1576,6 +1749,8 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                 provider = adbURL.map { AndroidFileProvider(adbURL: $0, runner: runner) }
             case .iOS:
                 provider = xcrunURL.map { IOSFileProvider(xcrunURL: $0, runner: runner) }
+            case .harmonyOS:
+                provider = hdcURL.map { HarmonyFileProvider(hdcURL: $0, runner: runner) }
             }
         }
         guard let provider else {
@@ -1584,11 +1759,49 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
             )
             return
         }
-        fileTransferService = FileTransferService(store: store, provider: provider)
+        fileTransferService = FileTransferService(store: store, provider: provider, session: session)
+        if let browsing = provider as? any DeviceFileBrowsing {
+            fileBrowserService = DeviceFileBrowserService(store: store, provider: browsing, session: session)
+        }
         fileTransferReadiness = .ready
     }
 
+    func harmonyDestinationPath(for location: DeviceFileLocation) -> String? {
+        switch location.scope {
+        case let .harmonyUserDocuments(userID):
+            return "/storage/media/\(userID)/local/files/Docs/Documents/\(location.relativePath)"
+        case .harmonyDebugFiles:
+            return "/data/local/tmp/\(location.relativePath)"
+        default: return nil
+        }
+    }
+
+    private var currentHarmonySend: TransferArtifact? {
+        guard let artifact = latestTransferArtifact,
+              artifact.direction == .hostToDevice,
+              artifact.sourceDevice == selectedDevice?.identity,
+              artifact.sourceDevice.platform == .harmonyOS else { return nil }
+        return artifact
+    }
+
+    var harmonySentFilePath: String? {
+        currentHarmonySend.flatMap { harmonyDestinationPath(for: $0.deviceLocation) }
+    }
+
+    var harmonySentFileInstructions: InterfaceMessage? {
+        guard let artifact = currentHarmonySend else { return nil }
+        switch artifact.deviceLocation.scope {
+        case .harmonyUserDocuments:
+            let folder = String(artifact.deviceLocation.relativePath.split(separator: "/").first ?? "")
+            return InterfaceMessage("On the phone, try Files > My phone > Documents > {0}. Open or share the copied file from there. Permission and visibility depend on the device and are not verified here. APK files still require a compatible third-party app; HDC does not install them natively.", arguments: [folder])
+        case .harmonyDebugFiles:
+            return "This is an HDC debug file, not a user download. It may not appear in the phone's Files app. Send to HarmonyOS user documents to try phone-side access."
+        default: return nil
+        }
+    }
+
     private func applyFileTransferOutcome(_ outcome: FileTransferOutcome) {
+        latestTransferArtifact = nil
         switch outcome {
         case let .transferred(artifact):
             latestTransferArtifact = artifact
@@ -1614,7 +1827,9 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
 
         guard let provider else {
             screenshotReadiness = .actionRequired(
-                "iOS screenshots need the managed runner's persistent device channel."
+                device.identity.platform == .harmonyOS
+                    ? "HarmonyOS screenshots are not supported in this version."
+                    : "iOS screenshots need the managed runner's persistent device channel."
             )
             return
         }
@@ -1710,6 +1925,10 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
             }
             deviceInformation.bind(device: device, session: session,
                 service: DeviceInformationService(store: store, provider: FixtureInformationProvider()))
+        } else if device.identity.platform == .harmonyOS, let hdcURL {
+            deviceInformation.bind(device: device, session: session,
+                service: DeviceInformationService(store: store,
+                    provider: HarmonyDeviceInformationProvider(hdcURL: hdcURL, runner: runner)))
         } else if device.identity.platform == .iOS, let xcrunURL {
             let runtime = informationRunnerChannel.map {
                 IOSDeviceInformationProvider.RuntimeBinding(session: session, channel: $0)
@@ -2204,6 +2423,8 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     }
 
     private func cancelDisconnectedContent() {
+        latestTransferArtifact = nil
+        clearFileBrowser()
         invalidateAndroidCommands()
         deviceInformation.invalidate()
         if selectedDevice?.identity.platform == .iOS {
@@ -2214,6 +2435,8 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         clipboardOperationTask?.cancel()
         screenshotOperationTask?.cancel()
         fileTransferTask?.cancel()
+        fileTransferRevision += 1
+        resetHarmonyPackageInstall()
         cancelMemoryPreparation()
         isClipboardBusy = false
         isCapturingScreenshot = false

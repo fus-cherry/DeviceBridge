@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 public enum IOSFileProviderError: Error, Sendable, Equatable {
     case unsupportedScope
@@ -9,7 +10,7 @@ public enum IOSFileProviderError: Error, Sendable, Equatable {
     case transferFailed
 }
 
-public actor IOSFileProvider: DeviceFileProviding {
+public actor IOSFileProvider: DeviceFileProviding, DeviceFileBrowsing {
     private let xcrunURL: URL
     private let runner: any HostCommandRunning
     private let fileManager: FileManager
@@ -113,6 +114,37 @@ public actor IOSFileProvider: DeviceFileProviding {
         return receipt
     }
 
+    public func list(directory: DeviceDirectoryLocation, transportID: String, operationID: UUID) async throws -> [DeviceFileEntry] {
+        let domain = try domain(for: directory.scope, writing: false)
+        let jsonURL = temporaryJSON(operationID: operationID, label: "listing-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: jsonURL) }
+        var arguments = ["devicectl", "device", "info", "files", "--device", transportID] + domain.arguments
+        if !directory.relativePath.isEmpty { arguments += ["--subdirectory", directory.relativePath] }
+        arguments += ["--no-recurse", "--quiet", "--timeout", "30", "--json-output", jsonURL.path]
+        let result = try await run(arguments, timeout: .seconds(35))
+        guard result.exitCode == 0 else { throw IOSFileProviderError.scopeUnavailable }
+        let object = try readMetadata(at: jsonURL)
+        guard let root = object as? [String: Any], let result = root["result"] as? [String: Any],
+              let files = (result["files"] ?? result["items"]) as? [[String: Any]] else {
+            throw IOSFileProviderError.malformedMetadata
+        }
+        var entries: [DeviceFileEntry] = []
+        var names = Set<String>()
+        for file in files {
+            let resources = file["resources"] as? [String: Any] ?? [:]
+            if resources["isSymbolicLink"] as? Bool == true { continue }
+            guard let name = (file["name"] ?? file["filename"] ?? file["displayName"]) as? String,
+                  let location = try? directory.child(named: name),
+                  names.insert(name).inserted,
+                  let isDirectory = (resources["isDirectory"] ?? file["isDirectory"]) as? Bool else {
+                throw IOSFileProviderError.malformedMetadata
+            }
+            entries.append(DeviceFileEntry(location: location, isDirectory: isDirectory,
+                byteLength: isDirectory ? nil : Self.byteLength(in: file)))
+        }
+        return entries
+    }
+
     private struct Domain {
         let type: String
         let identifier: String?
@@ -149,14 +181,17 @@ public actor IOSFileProvider: DeviceFileProviding {
     ) async throws -> DeviceFileReceipt? {
         let jsonURL = temporaryJSON(operationID: operationID, label: "files-\(UUID().uuidString)")
         defer { try? fileManager.removeItem(at: jsonURL) }
-        let path = location.relativePath as NSString
-        let parent = path.deletingLastPathComponent
+        // DeviceFileLocation already validates nonempty POSIX path components.
+        // Interpret the remote path directly, without host filesystem path rules.
+        let components = location.relativePath.split(separator: "/")
+        let parent = components.dropLast().joined(separator: "/")
+        let filename = String(components.last!)
         var arguments = [
             "devicectl", "device", "info", "files",
             "--device", transportID,
         ]
         arguments += domain.arguments
-        if !parent.isEmpty, parent != "." {
+        if !parent.isEmpty {
             arguments += ["--subdirectory", parent]
         }
         arguments += [
@@ -164,41 +199,54 @@ public actor IOSFileProvider: DeviceFileProviding {
             "--json-output", jsonURL.path,
         ]
         let result = try await run(arguments, timeout: .seconds(35))
-        guard result.exitCode == 0 else { return nil }
-        let data = try Data(contentsOf: jsonURL)
-        let object = try JSONSerialization.jsonObject(with: data)
-        guard let length = Self.findByteLength(
-            named: path.lastPathComponent,
-            in: object
-        ) else { return nil }
+        // A failed listing is not proof that the destination is absent. Fail closed
+        // rather than silently permitting an overwrite.
+        guard result.exitCode == 0 else { throw IOSFileProviderError.scopeUnavailable }
+        let object = try readMetadata(at: jsonURL)
+        guard let root = object as? [String: Any], let payload = root["result"] as? [String: Any],
+              let files = (payload["files"] ?? payload["items"]) as? [[String: Any]] else {
+            throw IOSFileProviderError.malformedMetadata
+        }
+        let directory = try DeviceDirectoryLocation(scope: location.scope, relativePath: parent)
+        var names = Set<String>()
+        var matched: [String: Any]?
+        for file in files {
+            guard let name = (file["name"] ?? file["filename"] ?? file["displayName"]) as? String,
+                  (try? directory.child(named: name)) != nil,
+                  names.insert(name).inserted else {
+                throw IOSFileProviderError.malformedMetadata
+            }
+            if name == filename { matched = file }
+        }
+        guard let matched else { return nil }
+        let resources = matched["resources"] as? [String: Any] ?? [:]
+        guard (resources["isDirectory"] ?? matched["isDirectory"]) as? Bool != true,
+              (resources["isSymbolicLink"] ?? matched["isSymbolicLink"]) as? Bool != true,
+              let length = Self.byteLength(in: matched) else {
+            // An existing entry without valid regular-file metadata is never "absent".
+            throw IOSFileProviderError.malformedMetadata
+        }
         return DeviceFileReceipt(byteLength: length, sha256: nil)
     }
 
-    private static func findByteLength(named name: String, in value: Any) -> Int64? {
-        if let dictionary = value as? [String: Any] {
-            let itemName = dictionary["name"] as? String
-                ?? dictionary["displayName"] as? String
-                ?? dictionary["filename"] as? String
-            if itemName == name {
-                // CoreDevice info-files places size inside the matched entry's metadata.
-                // Keep the association with this name; never borrow another entry's size.
-                if let metadata = dictionary["metadata"] as? [String: Any],
-                   let number = metadata["size"] as? NSNumber {
-                    return number.int64Value
-                }
-                for key in ["fileSize", "byteLength", "size"] {
-                    if let number = dictionary[key] as? NSNumber { return number.int64Value }
-                }
-            }
-            for child in dictionary.values {
-                if let found = findByteLength(named: name, in: child) { return found }
-            }
-        } else if let array = value as? [Any] {
-            for child in array {
-                if let found = findByteLength(named: name, in: child) { return found }
-            }
-        }
-        return nil
+    // Bound the sidecar itself: the command runner's stdout limit does not cover it.
+    private func readMetadata(at url: URL) throws -> Any {
+        try Task.checkCancellation()
+        let limit = 4 * 1_024 * 1_024
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: limit + 1) ?? Data()
+        guard data.count <= limit else { throw IOSFileProviderError.malformedMetadata }
+        do { return try JSONSerialization.jsonObject(with: data) }
+        catch { throw IOSFileProviderError.malformedMetadata }
+    }
+
+    private static func byteLength(in file: [String: Any]) -> Int64? {
+        let metadata = file["metadata"] as? [String: Any] ?? [:]
+        guard let number = (metadata["size"] ?? file["fileSize"] ?? file["byteLength"] ?? file["size"]) as? NSNumber,
+              let length = Int64(number.stringValue), length >= 0,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        return length
     }
 
     private func temporaryJSON(operationID: UUID, label: String) -> URL {
@@ -211,11 +259,14 @@ public actor IOSFileProvider: DeviceFileProviding {
         _ arguments: [String],
         timeout: Duration
     ) async throws -> HostCommandResult {
-        try await runner.run(HostCommandRequest(
+        try Task.checkCancellation()
+        let result = try await runner.run(HostCommandRequest(
             executableURL: xcrunURL,
             arguments: arguments,
             timeout: timeout,
             maximumOutputBytes: 512 * 1_024
         ))
+        try Task.checkCancellation()
+        return result
     }
 }

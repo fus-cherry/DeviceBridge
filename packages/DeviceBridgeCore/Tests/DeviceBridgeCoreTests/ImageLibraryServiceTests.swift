@@ -5,6 +5,45 @@ import Testing
 
 @Suite("Image library publication and original export")
 struct ImageLibraryServiceTests {
+    @Test("videos list without receiving bytes; unsupported codecs still export verified originals")
+    func videoDownload() async throws {
+        let fixture = try await ImageFixture.make()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        await fixture.provider.useVideo()
+        let catalog = try await fixture.service.load(source: .androidDCIM, mediaKind: .video)
+        let item = try #require(catalog.items.first)
+        #expect(item.mediaKind == .video)
+        #expect(await fixture.provider.reads == 0)
+        await #expect(throws: PhoneImageError.unsupported) {
+            try await fixture.service.thumbnail(itemID: item.id)
+        }
+        #expect(await fixture.provider.reads == 0)
+        // The fixture is intentionally not a playable movie: codec failure must not lose originals.
+        let preview = try await fixture.service.preview(itemID: item.id)
+        let local = try #require(preview.videoURL)
+        #expect(local.pathExtension == "mkv")
+        let destination = fixture.directory.appending(path: "saved.mkv")
+        _ = try await fixture.service.export(previewID: preview.id, destination: destination, replaceExisting: false)
+        #expect(try Data(contentsOf: destination) == fixture.provider.bytes)
+        await fixture.service.clear()
+        #expect(!FileManager.default.fileExists(atPath: local.path))
+        #expect(await fixture.service.currentPreview == nil)
+    }
+
+    @Test("oversized videos are catalogued but rejected before download")
+    func videoLimit() async throws {
+        let fixture = try await ImageFixture.make()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        await fixture.provider.useVideo()
+        await fixture.provider.declareLength(PhoneMediaKind.video.maximumBytes + 1)
+        let catalog = try await fixture.service.load(source: .androidDCIM, mediaKind: .video)
+        let item = try #require(catalog.items.first)
+        await #expect(throws: PhoneImageError.limitExceeded) {
+            try await fixture.service.preview(itemID: item.id)
+        }
+        #expect(await fixture.provider.reads == 0)
+    }
+
     @Test("iOS without a remote checksum exports exact local bytes; Android still requires a source hash")
     func iosLengthOnlyExport() async throws {
         let fixture = try await ImageFixture.make()
@@ -229,6 +268,8 @@ private actor ImageProviderDouble: PhoneImageProviding {
     private var declaredLength: Int64?
     private var replacementBytes: Data?
     private var missingSourceHash = false
+    private var filename = "photo.png"
+    func useVideo() { filename = "movie.mkv" }
     func omitSourceHash() { missingSourceHash = true }
     func declareLength(_ length: Int64) { declaredLength = length }
     func replaceReadBytes(_ data: Data) { replacementBytes = data }
@@ -249,7 +290,7 @@ private actor ImageProviderDouble: PhoneImageProviding {
     func list(source: ImageSource, transportID: String,
               validateSession: @escaping @Sendable () async throws -> Void) async throws -> [ImageCandidate] {
         lists += 1
-        return [ImageCandidate(source: source, path: (source.root ?? "/ios") + "/photo.png", byteLength: declaredLength ?? Int64(bytes.count), modifiedAt: Date())]
+        return [ImageCandidate(source: source, path: (source.root ?? "/ios") + "/" + filename, byteLength: declaredLength ?? Int64(bytes.count), modifiedAt: Date())]
     }
     func receive(_ image: ImageCandidate, transportID: String, partialURL: URL,
                  validateSession: @escaping @Sendable () async throws -> Void) async throws -> DeviceFileReceipt {

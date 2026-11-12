@@ -176,7 +176,7 @@ struct WorkspaceView: View {
                 VStack(spacing: 14) {
                     ProgressView()
                     Text(language.text("Discovering devices…")).font(.headline)
-                    Text(language.text("Checking connected Android and iOS devices. They will appear in the sidebar."))
+                    Text(language.text("Checking connected Android, iOS and HarmonyOS devices. They will appear in the sidebar."))
                         .foregroundStyle(.secondary)
                 }
                 .padding(24)
@@ -261,7 +261,7 @@ struct WorkspaceView: View {
         if model.devices.isEmpty, !model.isRefreshing {
             ContentUnavailableView(language.text("No devices"),
                 systemImage: "cable.connector",
-                description: Text(language.text("Connect an authorized Android or iOS device, then refresh."))
+                description: Text(language.text("Connect an authorized Android, iOS or HarmonyOS device, then refresh."))
             )
         } else {
             List(model.devices) { device in
@@ -513,7 +513,11 @@ struct WorkspaceView: View {
     }
 
     private func platformLabel(_ platform: DevicePlatform) -> String {
-        platform == .android ? "Android" : "iOS"
+        switch platform {
+        case .android: "Android"
+        case .iOS: "iOS"
+        case .harmonyOS: "HarmonyOS"
+        }
     }
 
     private var healthLabel: String {
@@ -616,7 +620,7 @@ private struct DeviceRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: device.identity.platform == .android ? "rectangle.and.hand.point.up.left" : "iphone")
+            Image(systemName: device.identity.platform == .iOS ? "iphone" : "rectangle.and.hand.point.up.left")
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 3) {
                 Text(device.name)

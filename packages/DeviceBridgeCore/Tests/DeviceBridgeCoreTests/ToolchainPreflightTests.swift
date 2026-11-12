@@ -23,6 +23,20 @@ struct ToolchainPreflightTests {
         #expect(result == .available(executable.standardizedFileURL))
     }
 
+    @Test("HDC tools resolve from configured SDK and absolute PATH directories")
+    func harmonySearchDirectories() {
+        let directories = ToolchainPreflight().defaultSearchDirectories(environment: [
+            "HDC_HOME": "/tools/hdc", "DEVECO_SDK_HOME": "/sdk/deveco", "PATH": ":relative:/tools/bin"
+        ]).map(\.path)
+        #expect(directories.contains("/tools/hdc"))
+        #expect(directories.contains("/sdk/deveco/default/openharmony/toolchains"))
+        #expect(directories.contains("/tools/bin"))
+        #expect(!directories.contains("relative"))
+        let resolution = ToolchainPreflight().resolve(.hdc, searchDirectories: [])
+        #expect(resolution == .missing(message: "HarmonyOS HDC was not found.",
+            recoveryAction: "Install DevEco Studio and add its SDK toolchains directory to PATH."))
+    }
+
     @Test("missing tool provides a user action without leaking searched paths")
     func missingToolIsActionable() {
         let privateDirectory = URL(fileURLWithPath: "/private/example/user/sdk")
