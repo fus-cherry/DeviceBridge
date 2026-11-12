@@ -195,6 +195,12 @@ struct WorkspaceView: View {
             selectedModule = selectedModule.selection(from: navigationPlatform, to: identity?.platform)
             if let platform = identity?.platform { navigationPlatform = platform }
         }
+        .onChange(of: model.connectionHealth) { _, health in
+            if model.selectedDeviceIdentity != nil,
+               [.suspect, .reconnecting, .actionRequired, .stopped].contains(health) {
+                showsUnavailableDevices = true
+            }
+        }
         .onChange(of: model.deviceSelection?.isChecking) { _, checking in
             if checking == false, case .failed = model.deviceSelection { showsUnavailableDevices = true }
         }

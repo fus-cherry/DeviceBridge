@@ -12,6 +12,7 @@ class DeviceSidebarChecks(unittest.TestCase):
     def test_failures_are_visible_and_retry_is_unchanged(self):
         self.assertIn('failure = problem.safeMessage', VIEW)
         self.assertIn('showsUnavailableDevices = true', VIEW)
+        self.assertIn('.onChange(of: model.connectionHealth)', VIEW)
         self.assertIn('Button { model.select(device.identity) }', VIEW)
     def test_active_status_and_guides_are_wired(self):
         self.assertIn('device.identity == model.selectedDeviceIdentity ? healthLabel', VIEW)
