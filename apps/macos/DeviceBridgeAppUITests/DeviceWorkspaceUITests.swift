@@ -65,8 +65,12 @@ final class DeviceWorkspaceUITests: XCTestCase {
         detected.click() // Keep the nested guide in the viewport without coordinate scrolling.
         app.buttons["device-connection-guides-toggle"].coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)).click()
         let sidebar = app.scrollViews["device-sidebar"]
-        let guide = sidebar.buttons["Android connection guide"]
+        // SwiftUI preserves the native macOS DisclosureTriangle AX role even
+        // when its visual label is a full-row custom Button. Query that real role.
+        let guide = sidebar.descendants(matching: .disclosureTriangle)["Android connection guide"]
+        recordSidebarHierarchy(app, name: "sidebar-help-hierarchy")
         XCTAssertTrue(guide.waitForExistence(timeout: 2))
+        XCTAssertGreaterThan(guide.frame.width, 200, "the entire disclosure row must be interactive")
         let step = sidebar.staticTexts["Connect a data-capable USB cable, unlock Android and enable USB debugging in Developer options."]
         guide.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
         XCTAssertTrue(step.waitForExistence(timeout: 2), "nested guide text must expand it")

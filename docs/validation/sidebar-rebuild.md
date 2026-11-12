@@ -91,3 +91,14 @@ the long-row query still failed: an identifier on the passive section-content VS
 propagated to all child device buttons, overriding their unique identifiers. That
 container identifier has been removed; per-device identifiers and labels remain.
 The full-row interaction assertions remain enabled for the next run.
+
+## Fourth macOS UI loop
+
+Automatic polling across multiple windows and reopening passed, as did the Chinese
+long-name layout. The main interaction test passed repeated group text/whitespace
+clicks, sidebar bounds, device selection/reselection and manual refresh. It then
+queried a nested guide as a Button, while the saved macOS AX tree exposes its
+correct native DisclosureTriangle role. The query now uses that exact role and
+also requires a wide interactive frame; text and far-right click assertions are
+unchanged. The Chinese screenshot was visually inspected and showed aligned rows
+inside the sidebar without an OS permission overlay. Full green CI is still required.
