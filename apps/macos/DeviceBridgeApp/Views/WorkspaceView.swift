@@ -761,7 +761,6 @@ private struct SidebarSection<Content: View>: View {
             if isExpanded {
                 VStack(alignment: .leading, spacing: 6) { content }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier(identifier)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

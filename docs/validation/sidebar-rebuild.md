@@ -82,3 +82,12 @@ path in its own process. The long-name test found the row's accessibility identi
 not exposed as expected while child elements had their own identifiers. Rows now expose
 one explicitly labelled button with a selected trait, and every failed assertion retains
 the current AX hierarchy. These checks must run again; their failures were not waived.
+
+## Third macOS UI loop
+
+The two-window close and final-window reopen flow passed on the actual runner. The
+Chinese language assertion also passed. The retained AX hierarchy pinpointed why
+the long-row query still failed: an identifier on the passive section-content VStack
+propagated to all child device buttons, overriding their unique identifiers. That
+container identifier has been removed; per-device identifiers and labels remain.
+The full-row interaction assertions remain enabled for the next run.
