@@ -692,5 +692,13 @@
   "Unlock and authorize HDC, or export the file into a permitted debug directory. Private app data needs app-level authorization. Use the media page to check mediatool support for photos and videos.": "请解锁设备并授权 HDC，或将文件导出到允许访问的调试目录。私有应用数据需要应用级授权。照片和视频可在媒体页面检查 mediatool 支持情况。",
   "HarmonyOS could not export this media item. If it is cloud-only, download it on the phone first, then refresh. The platform may fetch a cloud original during a selected export.": "鸿蒙无法导出此媒体项目。如果仅存于云端，请先在手机上下载，再刷新。导出所选项目时，系统可能会下载云端原件。",
   "This HarmonyOS device does not provide authorized mediatool media access.": "此鸿蒙设备未提供已授权的 mediatool 媒体访问能力。",
-  "This mediatool version does not support safe media listing. Update the device software; the library was not reported as empty.": "此版本的 mediatool 不支持安全列举媒体。请更新设备系统；这不代表媒体库为空。"
+  "This mediatool version does not support safe media listing. Update the device software; the library was not reported as empty.": "此版本的 mediatool 不支持安全列举媒体。请更新设备系统；这不代表媒体库为空。",
+  "Filter this loaded folder": "筛选当前已加载文件夹",
+  "Filters loaded names only; does not search other folders or read file contents.": "仅筛选已加载的名称，不搜索其他文件夹，也不读取文件内容。",
+  "Sort": "排序",
+  "Name": "名称",
+  "Largest first": "大文件优先",
+  "{0} of {1} entries": "显示 {0} / {1} 项",
+  "No matching files in this loaded folder.": "当前已加载文件夹中没有匹配项。",
+  "Receive target hidden by filter: {0}": "当前接收目标被筛选隐藏：{0}"
 }

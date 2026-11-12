@@ -12,6 +12,8 @@ struct FileTransferView: View {
     @State private var relativePath = ""
     @State private var directoryPath = ""
     @State private var mode: FileMode = .images
+    @State private var fileQuery = ""
+    @State private var fileOrder: DeviceFileListOrder = .name
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -48,6 +50,7 @@ struct FileTransferView: View {
             identifier = ""
             relativePath = ""
             directoryPath = ""
+            fileQuery = ""
             model.clearFileBrowser()
         }
         .onChange(of: mode) { _, newValue in
@@ -71,6 +74,7 @@ struct FileTransferView: View {
     private enum FileMode: Hashable { case images, videos, transfer }
 
     private func resetFolder() {
+        fileQuery = ""
         directoryPath = ""
         relativePath = ""
         model.clearFileBrowser()
@@ -224,6 +228,7 @@ struct FileTransferView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Button(language.text("Up one folder"), systemImage: "arrow.up") {
+                    fileQuery = ""
                     directoryPath = directoryPath.split(separator: "/").dropLast().joined(separator: "/")
                     loadFolder()
                 }.disabled(directoryPath.isEmpty || model.isBrowsingFiles || !model.canBrowseFiles)
@@ -240,11 +245,28 @@ struct FileTransferView: View {
                 }
             }
             if !model.fileEntries.isEmpty {
+                ViewThatFits(in: .horizontal) {
+                    HStack { folderFilter; folderSort }
+                    VStack(alignment: .leading) { folderFilter; folderSort }
+                }
+                Text(InterfaceMessage("{0} of {1} entries", arguments: [String(visibleFileEntries.count), String(model.fileEntries.count)]).render(in: language))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("files-filter-count")
+                if receiveTargetHiddenByFilter {
+                    Text(InterfaceMessage("Receive target hidden by filter: {0}", arguments: [relativePath]).render(in: language))
+                        .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                        .accessibilityIdentifier("files-filtered-receive-target")
+                }
+                if visibleFileEntries.isEmpty {
+                    Text(language.text("No matching files in this loaded folder."))
+                        .font(.callout).foregroundStyle(.secondary)
+                }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(model.fileEntries) { entry in
+                        ForEach(visibleFileEntries) { entry in
                             Button {
                                 if entry.isDirectory {
+                                    fileQuery = ""
                                     directoryPath = entry.location.relativePath
                                     relativePath = ""
                                     loadFolder()
@@ -272,6 +294,30 @@ struct FileTransferView: View {
                     .accessibilityIdentifier("files-browser-feedback")
             }
         }
+    }
+
+    private var receiveTargetHiddenByFilter: Bool {
+        DeviceFileListPresentation.receiveTargetHidden(in: model.fileEntries, matching: fileQuery,
+                                                       relativePath: relativePath)
+    }
+
+    private var visibleFileEntries: [DeviceFileEntry] {
+        DeviceFileListPresentation.entries(model.fileEntries, matching: fileQuery, order: fileOrder)
+    }
+
+    private var folderFilter: some View {
+        TextField(language.text("Filter this loaded folder"), text: $fileQuery)
+            .textFieldStyle(.roundedBorder)
+            .accessibilityIdentifier("files-filter")
+            .help(language.text("Filters loaded names only; does not search other folders or read file contents."))
+    }
+
+    private var folderSort: some View {
+        Picker(language.text("Sort"), selection: $fileOrder) {
+            Text(language.text("Name")).tag(DeviceFileListOrder.name)
+            Text(language.text("Largest first")).tag(DeviceFileListOrder.largestFirst)
+        }.pickerStyle(.menu).fixedSize()
+            .accessibilityIdentifier("files-sort")
     }
 
     private func loadFolder() {

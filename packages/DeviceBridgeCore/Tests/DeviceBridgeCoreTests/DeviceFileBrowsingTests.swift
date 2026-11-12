@@ -119,3 +119,49 @@ private struct LocalDirectoryShellRunner: HostCommandRunning {
             executableURL: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", script], timeout: .seconds(5)))
     }
 }
+
+@Suite("Loaded folder presentation")
+struct DeviceFileListPresentationTests {
+    private func entry(_ name: String, directory: Bool = false, size: Int64? = nil) throws -> DeviceFileEntry {
+        DeviceFileEntry(location: try DeviceFileLocation(scope: .androidSharedDownloads, relativePath: name),
+                        isDirectory: directory, byteLength: size)
+    }
+
+    @Test func hiddenReceiveTargetOnlyWarnsForFilteredLoadedFile() throws {
+        let entries = try [entry("report.pdf"), entry("folder", directory: true)]
+        #expect(DeviceFileListPresentation.receiveTargetHidden(in: entries, matching: "photo", relativePath: "report.pdf"))
+        for (query, path) in [("REPORT", "report.pdf"), ("  ", "report.pdf"), ("photo", "manual/path"), ("photo", "folder"), ("photo", "")] {
+            #expect(!DeviceFileListPresentation.receiveTargetHidden(in: entries, matching: query, relativePath: path))
+        }
+    }
+
+    @Test func trimsQueryAndIgnoresCase() throws {
+        let entries = try [entry("Report.PDF"), entry("photo.jpg")]
+        #expect(DeviceFileListPresentation.entries(entries, matching: "  pdf \n").map(\.name) == ["Report.PDF"])
+        #expect(DeviceFileListPresentation.entries(entries, matching: " ").count == 2)
+    }
+
+    @Test func unicodeAndNoMatches() throws {
+        let entries = try [entry("旅行照片.png"), entry("报告.pdf")]
+        #expect(DeviceFileListPresentation.entries(entries, matching: "照片").map(\.name) == ["旅行照片.png"])
+        #expect(DeviceFileListPresentation.entries(entries, matching: "missing").isEmpty)
+        #expect(DeviceFileListPresentation.entries([], matching: "").isEmpty)
+    }
+
+    @Test func directoriesStayFirstAndNamesSortNaturally() throws {
+        let entries = try [entry("file10.txt"), entry("zfolder", directory: true), entry("file2.txt")]
+        #expect(DeviceFileListPresentation.entries(entries, matching: "").map(\.name) == ["zfolder", "file2.txt", "file10.txt"])
+    }
+
+    @Test func sizeSortKeepsUnknownLastAndDoesNotChangeOriginals() throws {
+        let entries = try [entry("unknown"), entry("zero", size: 0), entry("large", size: 500), entry("folder", directory: true)]
+        #expect(DeviceFileListPresentation.entries(entries, matching: "", order: .largestFirst).map(\.name) == ["folder", "large", "zero", "unknown"])
+        #expect(entries.map(\.name) == ["unknown", "zero", "large", "folder"])
+    }
+
+    @Test func filtersDoNotMatchParentPathsOrAlterIdentity() throws {
+        let item = try entry("parent/leaf.txt", size: 9)
+        #expect(DeviceFileListPresentation.entries([item], matching: "parent").isEmpty)
+        #expect(DeviceFileListPresentation.entries([item], matching: "leaf") == [item])
+    }
+}

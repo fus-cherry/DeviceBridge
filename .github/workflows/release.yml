@@ -2,7 +2,7 @@ name: Build and Release
 
 on:
   push:
-    branches: [main, cloud/harmony-video-file-reading]
+    branches: [main, cloud/harmony-video-file-reading, cloud/0.1.6-candidate]
     tags: ['v*']
   workflow_dispatch:
 

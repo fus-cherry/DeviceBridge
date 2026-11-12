@@ -157,7 +157,8 @@ struct WorkspaceView: View {
     @ObservedObject var model: WorkspaceViewModel
     @Binding var languageValue: String
     @Environment(\.interfaceLanguage) private var language
-    @State private var selectedModule: WorkspaceModule = .clipboard
+    @State private var selectedModule: WorkspaceModule = .information
+    @State private var navigationPlatform: DevicePlatform?
     @State private var showsAgentGuide = false
     @State private var confirmsIOSConnectionRepair = false
     @State private var iosRepairProposal: (identity: DeviceIdentity, revision: Int)?
@@ -189,8 +190,9 @@ struct WorkspaceView: View {
                 )
             }
         }
-        .onChange(of: model.selectedDeviceIdentity) { _, identity in
-            if selectedModule == .shell, identity?.platform != .android { selectedModule = .information }
+        .onChange(of: model.selectedDeviceIdentity, initial: true) { _, identity in
+            selectedModule = selectedModule.selection(from: navigationPlatform, to: identity?.platform)
+            if let platform = identity?.platform { navigationPlatform = platform }
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -551,8 +553,7 @@ struct WorkspaceView: View {
     }
 }
 
-private enum WorkspaceModule: String {
-    case information, clipboard, memory, screenshot, files, shell
+private extension WorkspaceModule {
     var title: String {
         switch self {
         case .shell: "Android Shell"

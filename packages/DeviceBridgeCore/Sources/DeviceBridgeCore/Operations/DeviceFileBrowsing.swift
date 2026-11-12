@@ -38,6 +38,35 @@ public struct DeviceFileEntry: Sendable, Equatable, Identifiable {
     }
 }
 
+/// Presentation-only filtering of the already loaded folder. Never accesses the device.
+public enum DeviceFileListOrder: String, CaseIterable, Sendable {
+    case name, largestFirst
+}
+
+public enum DeviceFileListPresentation {
+    public static func receiveTargetHidden(in entries: [DeviceFileEntry], matching query: String,
+                                           relativePath: String) -> Bool {
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let target = entries.first(where: { !$0.isDirectory && $0.location.relativePath == relativePath })
+        else { return false }
+        return self.entries([target], matching: query).isEmpty
+    }
+
+    public static func entries(_ entries: [DeviceFileEntry], matching query: String,
+                               order: DeviceFileListOrder = .name) -> [DeviceFileEntry] {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return entries.filter { term.isEmpty || $0.name.localizedCaseInsensitiveContains(term) }.sorted {
+            if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
+            if order == .largestFirst, !$0.isDirectory, $0.byteLength != $1.byteLength {
+                // Unknown sizes remain last, rather than being confused with an empty file.
+                return ($0.byteLength ?? -1) > ($1.byteLength ?? -1)
+            }
+            let comparison = $0.name.localizedStandardCompare($1.name)
+            return comparison == .orderedSame ? $0.id < $1.id : comparison == .orderedAscending
+        }
+    }
+}
+
 public protocol DeviceFileBrowsing: Sendable {
     func list(directory: DeviceDirectoryLocation, transportID: String, operationID: UUID) async throws -> [DeviceFileEntry]
 }
