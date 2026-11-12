@@ -159,6 +159,7 @@ struct WorkspaceView: View {
     @Environment(\.interfaceLanguage) private var language
     @State private var selectedModule: WorkspaceModule = .information
     @State private var navigationPlatform: DevicePlatform?
+    @State private var showsUnavailableDevices = false
     @State private var showsAgentGuide = false
     @State private var confirmsIOSConnectionRepair = false
     @State private var iosRepairProposal: (identity: DeviceIdentity, revision: Int)?
@@ -193,6 +194,9 @@ struct WorkspaceView: View {
         .onChange(of: model.selectedDeviceIdentity, initial: true) { _, identity in
             selectedModule = selectedModule.selection(from: navigationPlatform, to: identity?.platform)
             if let platform = identity?.platform { navigationPlatform = platform }
+        }
+        .onChange(of: model.deviceSelection?.isChecking) { _, checking in
+            if checking == false, case .failed = model.deviceSelection { showsUnavailableDevices = true }
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -261,24 +265,32 @@ struct WorkspaceView: View {
     @ViewBuilder
     private var deviceSidebar: some View {
         if model.devices.isEmpty, !model.isRefreshing {
+            VStack {
             ContentUnavailableView(language.text("No devices"),
                 systemImage: "cable.connector",
                 description: Text(language.text("Connect an authorized Android, iOS or HarmonyOS device, then refresh."))
             )
+            connectionGuides.padding()
+            }
         } else {
-            List(model.devices) { device in
-                Button {
-                    model.select(device.identity)
-                } label: {
-                    DeviceRow(
-                        device: device,
-                        isSelected: device.identity == (model.deviceSelection?.device.identity ?? model.selectedDeviceIdentity),
-                        isChecking: model.deviceSelection?.device.identity == device.identity
-                            && model.deviceSelection?.isChecking == true
-                    )
+            List {
+                Section { connectionGuides }
+                Section(language.text("Available to connect")) {
+                    let available = model.devices.filter { connectionPresentation($0).canAttemptConnection }
+                    if available.isEmpty {
+                        Text(language.text("No connectable transports detected")).font(.caption).foregroundStyle(.secondary)
+                    }
+                    ForEach(available) { device in deviceRow(device) }
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(device.name)
+                let unavailable = model.devices.filter { !connectionPresentation($0).canAttemptConnection }
+                if !unavailable.isEmpty {
+                    DisclosureGroup(isExpanded: $showsUnavailableDevices) {
+                        ForEach(unavailable) { device in deviceRow(device) }
+                    } label: {
+                        Text(InterfaceMessage("Unavailable or needs attention ({0})", arguments: [String(unavailable.count)]).render(in: language))
+                    }
+                    .accessibilityIdentifier("devices-needing-attention")
+                }
             }
             .overlay {
                 if model.isRefreshing {
@@ -291,9 +303,60 @@ struct WorkspaceView: View {
         }
     }
 
+    private var connectionGuides: some View {
+        DisclosureGroup(language.text("Connection help")) {
+            ForEach([DevicePlatform.android, .iOS, .harmonyOS], id: \.self) { platform in
+                platformGuide(platform)
+            }
+        }
+        .accessibilityIdentifier("device-connection-guides")
+    }
+
+    private func platformGuide(_ platform: DevicePlatform) -> some View {
+        let guide = DevicePlatformGuide(platform: platform)
+        return DisclosureGroup(language.text(guide.title)) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(guide.steps, id: \.self) { step in
+                    Text(language.text(step)).font(.caption).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func connectionPresentation(_ device: DeviceRecord) -> DeviceConnectionPresentation {
+        var failure: String?
+        if case let .failed(failedDevice, problem) = model.deviceSelection, failedDevice.identity == device.identity {
+            failure = problem.safeMessage
+        }
+        if failure == nil, device.identity == model.selectedDeviceIdentity,
+           [.suspect, .reconnecting, .actionRequired, .stopped].contains(model.connectionHealth) {
+            failure = healthLabel
+        }
+        return DeviceConnectionPresentation(device: device, failedSelectionReason: failure)
+    }
+
+    private func rowConnectionReason(_ device: DeviceRecord) -> String {
+        if case let .failed(failedDevice, problem) = model.deviceSelection, failedDevice.identity == device.identity {
+            return problem.safeMessage
+        }
+        return device.identity == model.selectedDeviceIdentity ? healthLabel : connectionPresentation(device).reason
+    }
+
+    private func deviceRow(_ device: DeviceRecord) -> some View {
+        Button { model.select(device.identity) } label: {
+            DeviceRow(device: device,
+                isSelected: device.identity == (model.deviceSelection?.device.identity ?? model.selectedDeviceIdentity),
+                isChecking: model.deviceSelection?.device.identity == device.identity && model.deviceSelection?.isChecking == true,
+                connectionReason: rowConnectionReason(device))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(device.name)
+    }
+
     private func deviceSelectionView(_ selection: DeviceSelectionPresentation) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(selection.device.name).font(.title2.bold())
+            platformGuide(selection.device.identity.platform)
             if selection.isChecking {
                 HStack(spacing: 12) {
                     ProgressView().controlSize(.small)
@@ -363,6 +426,8 @@ struct WorkspaceView: View {
                     }
                 }
 
+                platformGuide(device.identity.platform)
+
                 ForEach(model.iosPreparations, id: \.id) { preparation in
                     IOSPreparationView(preparation: preparation,
                         canCancel: model.canStopIOSPreparation(preparation.owner),
@@ -375,21 +440,26 @@ struct WorkspaceView: View {
                 // Keep the heading and all controls exposed through a plain layout container.
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Text(language.text("Automatic readiness"))
+                        Text(language.text("Device capabilities"))
                         Spacer()
                         Button(language.text("Agent API")) { showsAgentGuide = true }
                             .accessibilityIdentifier("agent-api-guide")
                     }
                     VStack(alignment: .leading, spacing: 10) {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 10)], spacing: 10) {
-                            moduleButton(.information, status: model.deviceInformation.statusText)
-                            moduleButton(.clipboard, status: model.clipboardReadinessText)
-                            moduleButton(.memory, status: model.memoryReadinessText)
-                            moduleButton(.screenshot, status: model.screenshotReadinessText)
-                            moduleButton(.files, status: model.fileTransferReadinessText)
+                            moduleButton(.information)
+                            moduleButton(.clipboard)
+                            moduleButton(.memory)
+                            moduleButton(.screenshot)
+                            moduleButton(.files)
                             if device.identity.platform == .android {
-                                moduleButton(.shell, status: model.androidShell.statusText)
+                                moduleButton(.shell)
                             }
+                        }
+                        if let detail = model.capabilitySummary(for: selectedModule).detail {
+                            Text(language.text(detail)).font(.callout).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("selected-capability-detail")
                         }
                         Text(language.text("Select a tool to open it. Readiness checks do not read device content."))
                             .font(.caption).foregroundStyle(.secondary)
@@ -445,8 +515,8 @@ struct WorkspaceView: View {
         }
     }
 
-    private func moduleButton(_ module: WorkspaceModule, status: String) -> some View {
-        WorkspaceModuleButton(module: module, status: status, isSelected: selectedModule == module) {
+    private func moduleButton(_ module: WorkspaceModule) -> some View {
+        WorkspaceModuleButton(module: module, summary: model.capabilitySummary(for: module), isSelected: selectedModule == module) {
             selectedModule = module
         }
     }
@@ -578,11 +648,19 @@ private extension WorkspaceModule {
 
 private struct WorkspaceModuleButton: View {
     let module: WorkspaceModule
-    let status: String
+    let summary: DeviceCapabilitySummary
     let isSelected: Bool
     let action: () -> Void
     @Environment(\.interfaceLanguage) private var language
     @State private var isHovered = false
+
+    private var statusColor: Color {
+        switch summary.state {
+        case .ready: .green
+        case .needsAuthorization, .missingTool, .actionRequired: .orange
+        default: .secondary
+        }
+    }
 
     var body: some View {
         Button(action: action) {
@@ -593,7 +671,7 @@ private struct WorkspaceModuleButton: View {
                     Image(systemName: "checkmark.circle.fill").opacity(isSelected ? 1 : 0)
                 }.foregroundStyle(isSelected ? Color.accentColor : .secondary)
                 Text(language.text(module.title)).font(.headline).lineLimit(1)
-                Text(language.text(status)).font(.caption).foregroundStyle(.secondary)
+                Text(language.text(summary.statusText)).font(.caption).foregroundStyle(statusColor)
                     .lineLimit(2).frame(height: 30, alignment: .topLeading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -608,7 +686,7 @@ private struct WorkspaceModuleButton: View {
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
         .accessibilityLabel(language.text(module.title))
-        .accessibilityValue("\(language.text(isSelected ? "Selected" : "Not selected")) · \(language.text(status))")
+        .accessibilityValue("\(language.text(isSelected ? "Selected" : "Not selected")) · \(language.text(summary.statusText))")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
         .accessibilityIdentifier("module-\(module.rawValue)")
     }
@@ -618,6 +696,8 @@ private struct DeviceRow: View {
     let device: DeviceRecord
     let isSelected: Bool
     let isChecking: Bool
+    let connectionReason: String
+    @Environment(\.interfaceLanguage) private var language
 
     var body: some View {
         HStack(spacing: 10) {
@@ -626,6 +706,8 @@ private struct DeviceRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(device.name)
                     .fontWeight(isSelected ? .semibold : .regular)
+                Text(language.text(connectionReason)).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(device.identity.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -400,6 +400,62 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         }
     }
 
+    /// Presentation only: action admission continues to use the existing capability owners.
+    func capabilitySummary(for module: WorkspaceModule) -> DeviceCapabilitySummary {
+        guard let device = selectedDevice else { return .init(state: .notChecked) }
+        let toolAvailable: Bool
+        if arguments.contains("--fixture-devices") { toolAvailable = true }
+        else {
+            switch device.identity.platform {
+            case .android: toolAvailable = adbURL != nil
+            case .iOS: toolAvailable = xcrunURL != nil
+            case .harmonyOS: toolAvailable = hdcURL != nil
+            }
+        }
+        let observed: DeviceCapabilitySummary
+        switch module {
+        case .information:
+            if deviceInformation.isBusy { observed = .init(state: .working) }
+            else if let failure = deviceInformation.operation?.failure {
+                observed = .init(state: .actionRequired, detail: failure.safeMessage)
+            } else {
+                observed = .init(state: deviceInformation.canRead ? .availableOnDemand : .notChecked,
+                                 detail: deviceInformation.statusText)
+            }
+        case .shell:
+            observed = .init(state: androidShell.isBusy ? .working
+                            : androidShell.session == nil ? .notChecked : .availableOnDemand,
+                             detail: androidShell.failure?.safeMessage)
+        case .clipboard: observed = summary(for: clipboardReadiness, action: clipboardAction)
+        case .screenshot: observed = summary(for: screenshotReadiness, action: screenshotAction)
+        case .memory: observed = summary(for: memoryReadiness, action: memoryAction)
+        case .files:
+            let current = summary(for: fileTransferReadiness, action: fileTransferAction)
+            // Provider construction does not verify permissions for every folder or media source.
+            observed = current.state == .ready
+                ? .init(state: .availableOnDemand,
+                        detail: "File and media access is checked when requested; a connected device does not guarantee access to every folder or media source.")
+                : current
+        }
+        return .resolve(platform: device.identity.platform, module: module,
+                        authorization: device.authorization, toolAvailable: toolAvailable,
+                        connectionIssue: connectionActionBlock, observed: observed)
+    }
+
+    private func summary(for readiness: CapabilityReadiness,
+                         action: CapabilityActionPresentation) -> DeviceCapabilitySummary {
+        // Preserve an owner's exact explanation; never categorize errors by matching text.
+        switch readiness {
+        case .idle: return .init(state: .notChecked, detail: action.detail)
+        case .preparing: return .init(state: .preparing, detail: action.detail)
+        case let .actionRequired(reason): return .init(state: .actionRequired, detail: reason)
+        case let .availableOnDemand(reason):
+            return .init(state: action.canStart ? .availableOnDemand : .working,
+                         detail: action.detail ?? reason)
+        case .ready: return .init(state: action.canStart ? .ready : .working, detail: action.detail)
+        }
+    }
+
     var clipboardAction: CapabilityActionPresentation {
         actionPresentation(for: clipboardReadiness, busy: isClipboardBusy,
             conflictsWithAnotherOperation: selectedDevice?.identity.platform == .iOS && isCapturingScreenshot)

@@ -45,7 +45,7 @@ tests = work / 'Tests/DeviceBridgeCoreTests'
 for directory in (source, tests):
     if directory.exists(): shutil.rmtree(directory)
     directory.mkdir(parents=True)
-files = '''Models/DeviceModels Models/WorkspaceModule Models/PhoneImages Models/DeviceInformation
+files = '''Models/DeviceModels Models/WorkspaceModule Models/DeviceConnectionPresentation Models/DeviceCapabilitySummary Models/PhoneImages Models/DeviceInformation
 Models/AndroidShellExecution Models/AndroidShellHistory Session/DeviceSessionStore
 Discovery/HDCDeviceParser Discovery/ADBDeviceParser Operations/DeviceFileBrowsing
 Operations/AndroidFileProvider Operations/HarmonyFileProvider Operations/IOSFileProvider
@@ -63,7 +63,7 @@ f = (core / 'Sources/DeviceBridgeCore/Operations/ImageLibraryService.swift').rea
 (source / 'ImageRequestValidity.swift').write_text('import Foundation\n' + f[f.index('final class ImageRequestValidity'):f.index('    func commit(staged:')] + '}\n')
 (source / 'AutoreleasepoolShim.swift').write_text('func autoreleasepool<T>(invoking body: () throws -> T) rethrows -> T { try body() }\n')
 shutil.copyfile(core / 'Sources/DeviceBridgeCore/Localization/zh-Hans.json', source / 'zh-Hans.json')
-test_names = '''WorkspaceModule HarmonyRead DeviceFileBrowsing AndroidFileProvider IOSFileProvider
+test_names = '''DeviceConnectionPresentation DeviceCapabilitySummary WorkspaceModule HarmonyRead DeviceFileBrowsing AndroidFileProvider IOSFileProvider
 PhoneImageModels ToolchainPreflight AndroidImageProvider FileTransferService HarmonyPackageInstall HarmonyFileSend HarmonyTransferSession HarmonyMediaProvider'''.split()
 if args.include_host_runner: test_names.append('HostCommandRunner')
 for name in test_names:

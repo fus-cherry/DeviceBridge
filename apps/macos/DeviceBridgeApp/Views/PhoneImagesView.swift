@@ -16,7 +16,7 @@ struct PhoneImagesView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(deviceName).font(.headline).accessibilityIdentifier("images-source-device")
             Text(language.text(model.isHarmonyMedia
-                ? "HarmonyOS mediatool: Load reads metadata only, with no automatic thumbnails. Click an item to export and preview it, or check items and choose Download selected. Selected media is temporarily copied on the device, then pulled to your Mac. Cleanup is attempted; disconnection may leave temporary copies. System-library originals are never deleted or changed."
+                ? "HarmonyOS: Load lists metadata only. Selecting an item exports a temporary copy for preview; it does not modify the library original."
                 : model.mediaKind == .video
                 ? "Videos are downloaded only when selected (up to 512 MiB). Playback depends on macOS codec support; download the original to open in another player."
                 : model.source == .iosUSBCameraImport
@@ -24,8 +24,15 @@ struct PhoneImagesView: View {
                 : "Shared image folders. This page loads previews on demand; Download original saves the selected image to your Mac."))
                 .font(.caption).foregroundStyle(.secondary)
             if model.isHarmonyMedia {
-                Text(language.text("Images: up to 20 MiB; videos: up to 512 MiB. Hidden media is unsupported. Export may make the system download a cloud original, using network data and device storage; cloud-only media is not guaranteed to work. Try downloading it in Gallery first. Older devices without mediatool listing cannot use this feature. Video playback depends on macOS codec support."))
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(language.text("Export may download cloud media, using network data and device storage. Disconnection may leave temporary copies; cloud-only media is not guaranteed to work."))
+                    .font(.caption).foregroundStyle(.orange)
+                    .accessibilityIdentifier("harmony-media-export-warning")
+                DisclosureGroup(language.text("Media access details and limits")) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(language.text("HarmonyOS mediatool: Load reads metadata only, with no automatic thumbnails. Click an item to export and preview it, or check items and choose Download selected. Selected media is temporarily copied on the device, then pulled to your Mac. Cleanup is attempted; disconnection may leave temporary copies. System-library originals are never deleted or changed."))
+                        Text(language.text("Images: up to 20 MiB; videos: up to 512 MiB. Hidden media is unsupported. Export may make the system download a cloud original, using network data and device storage; cloud-only media is not guaranteed to work. Try downloading it in Gallery first. Older devices without mediatool listing cannot use this feature. Video playback depends on macOS codec support."))
+                    }.font(.caption).foregroundStyle(.secondary)
+                }.font(.caption).accessibilityIdentifier("harmony-media-details")
             }
             HStack {
                 Picker(language.text(model.mediaKind == .video ? "Video source" : "Image source"), selection: Binding(get: { model.source }, set: { model.changeSource($0) })) {

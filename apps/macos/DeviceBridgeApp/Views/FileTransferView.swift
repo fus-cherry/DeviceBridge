@@ -103,7 +103,10 @@ struct FileTransferView: View {
                         .foregroundStyle(.orange)
                 }
 
-                if model.selectedDevice?.identity.platform == .harmonyOS { harmonyPackageControls }
+                if model.selectedDevice?.identity.platform == .harmonyOS {
+                    Label(language.text("Browse device files"), systemImage: "folder")
+                        .font(.subheadline.bold()).accessibilityIdentifier("harmony-browse-section")
+                }
 
                 HStack {
                     Picker(language.text("Scope"), selection: $scope) {
@@ -127,6 +130,14 @@ struct FileTransferView: View {
                 Text(language.text(scope.pathHint))
                     .font(.caption).foregroundStyle(.secondary)
                 directoryBrowser
+
+                if model.selectedDevice?.identity.platform == .harmonyOS {
+                    Divider()
+                    Label(language.text("Send and receive files"), systemImage: "arrow.up.arrow.down")
+                        .font(.subheadline.bold()).accessibilityIdentifier("harmony-transfer-section")
+                    Text(language.text("Sending an APK copies a file only; HDC cannot install it as a native HarmonyOS app."))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
 
                 TextField(language.text(scope == .harmonyUserDocuments ? "Relative path for receive or browse (not needed to send)" : "Relative device path"), text: $relativePath)
                     .textFieldStyle(.roundedBorder)
@@ -163,6 +174,11 @@ struct FileTransferView: View {
                         .accessibilityIdentifier("files-feedback")
                         .accessibilityValue(feedback.render(in: language))
                 }
+
+                if model.selectedDevice?.identity.platform == .harmonyOS {
+                    Divider()
+                    harmonyPackageControls
+                }
             }
             .padding(.vertical, 4)
         }
@@ -170,10 +186,14 @@ struct FileTransferView: View {
 
     private var harmonyPackageControls: some View {
         VStack(alignment: .leading, spacing: 8) {
+            Label(language.text("Install HarmonyOS packages"), systemImage: "shippingbox")
+                .font(.subheadline.bold()).accessibilityIdentifier("harmony-install-section")
             Text(language.text("HDC installs HarmonyOS HAP packages, not Android APKs. Use Send file to copy an APK only; third-party compatibility apps vary."))
                 .font(.caption).foregroundStyle(.secondary)
-            Text(language.text("Alternative: open the app developer's official download page in the phone browser and download the APK there, then open it with a compatible third-party app if available. Downloading does not make it a native HarmonyOS app."))
-                .font(.caption).foregroundStyle(.secondary)
+            DisclosureGroup(language.text("About APK compatibility")) {
+                Text(language.text("Alternative: open the app developer's official download page in the phone browser and download the APK there, then open it with a compatible third-party app if available. Downloading does not make it a native HarmonyOS app."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }.font(.caption).accessibilityIdentifier("harmony-apk-help")
             HStack {
                 Button(language.text("Install HAP…"), systemImage: "shippingbox") { chooseHarmonyPackage() }
                     .disabled(!model.canInstallHarmonyPackage)
