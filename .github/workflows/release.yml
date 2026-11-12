@@ -11,7 +11,8 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false
+  # Only this isolated repair branch cancels obsolete candidates; main/tags are unchanged.
+  cancel-in-progress: ${{ github.ref == 'refs/heads/cloud/0.1.7-sidebar-fix' }}
 
 jobs:
   build:

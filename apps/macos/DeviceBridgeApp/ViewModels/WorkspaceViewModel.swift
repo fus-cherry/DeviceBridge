@@ -187,6 +187,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     // disconnect that session, but must never reactivate it from transport metadata.
     private var commandReadySession: ConnectionSession?
     private var sidebarFixtureScan = 0
+    private var workspaceHosts = Set<UUID>()
     private var selectionTask: Task<Void, Never>?
     private var clipboardOperationTask: Task<Void, Never>?
     private var screenshotOperationTask: Task<Void, Never>?
@@ -568,6 +569,18 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         }
     }
 
+    /// WindowGroup shares this model. One closing/disappearing window must not stop
+    /// discovery and sessions still owned by another window. Calls are idempotent.
+    func attachWorkspace(_ host: UUID) {
+        guard workspaceHosts.insert(host).inserted else { return }
+        start()
+    }
+
+    func detachWorkspace(_ host: UUID) {
+        guard workspaceHosts.remove(host) != nil else { return }
+        if workspaceHosts.isEmpty { stop() }
+    }
+
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
@@ -597,6 +610,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     }
 
     func stop() {
+        workspaceHosts.removeAll()
         stopAgentAPI()
         commandReadySession = nil
         invalidateAndroidCommands()

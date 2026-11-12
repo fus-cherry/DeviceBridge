@@ -78,6 +78,7 @@ struct WorkspaceInventoryChecks {
         try require(model.devices.first?.candidates.first?.endpoint == "192.0.2.1:5555", "changed route endpoint was lost")
         try require(model.devices.first?.candidates.first?.kind == .wifi, "changed transport kind was lost")
         model.stop()
+        try await multipleWorkspaceHostsRetainDiscovery()
         try await pollingRecoversDetectedDevice()
         try await removedSelectionCanReconnect()
         try await heldProbeCannotSelectReplacementRoute()
@@ -130,6 +131,38 @@ struct WorkspaceInventoryChecks {
                     "recovered same-device route skipped rebinding without a foreground helper context")
         recovery.stop()
         print("PASS: workspace inventory — initial/manual busy, silent timer, meaningful publication, offline/authorization recovery, explicit retries, selected removal/reappearance and route rebinding, preserved selection, single-flight, stop/restart stale completion; synthetic commands only, no device or UI")
+    }
+
+    @MainActor
+    static func multipleWorkspaceHostsRetainDiscovery() async throws {
+        let runner = InventoryRunner()
+        let model = WorkspaceViewModel(arguments: [], runner: runner)
+        defer { model.stop() }
+        let first = UUID(), second = UUID(), reopened = UUID()
+        model.attachWorkspace(first)
+        model.attachWorkspace(first) // repeated appearances must not leak ownership
+        model.attachWorkspace(second)
+        try await wait { await runner.scans == 1 }
+        await runner.release()
+        try await wait { !model.isRefreshing && model.devices.count == 1 }
+        model.detachWorkspace(second)
+        model.detachWorkspace(second) // a repeated disappearance is harmless
+        model.detachWorkspace(UUID()) // an unrelated window cannot stop the owner
+        try await wait(seconds: 7) { await runner.scans == 2 }
+        await runner.release(status: "offline")
+        try await wait { model.devices.first?.candidates.first?.status == .offline }
+        try require(model.connectionHealth != .stopped,
+                    "closing one of two windows stopped the remaining window's discovery")
+        model.detachWorkspace(first)
+        try require(model.connectionHealth == .stopped && !model.isRefreshing,
+                    "last workspace host must release discovery and owned resources")
+        model.attachWorkspace(reopened)
+        try await wait { await runner.scans == 3 }
+        await runner.release()
+        try await wait { !model.isRefreshing && model.devices.first?.authorization == .authorized }
+        model.detachWorkspace(reopened)
+        try require(model.connectionHealth == .stopped, "reopened last window did not clean up")
+        print("PASS: repeated two-window appearances/disappearances retain the actual inventory timer until the final host closes")
     }
 
     /// Exercise the actual parser and five-second production timer. A newly detected

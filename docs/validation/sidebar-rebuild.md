@@ -63,3 +63,22 @@ could not expose controls, so the build correctly failed and produced no DMG. No
 permission was granted and no privacy setting was changed. The UI phase now runs
 before those network checks, and tests use the standard New Window command when
 macOS does not restore a test window. A fresh successful interaction run is required.
+
+## Multi-window lifecycle boundary
+
+The shared WindowGroup model now retains idempotent workspace host tokens. Closing
+one window no longer calls global stop while another window still owns discovery.
+A production-timer model regression covers repeated attach/detach and reopening;
+the UI auto-recovery test opens and closes a second real window before changing
+its synthetic transport to online. This is a verified code-path risk, not evidence
+that multiple windows caused the user's original report.
+
+## Second macOS UI loop
+
+The isolated UI phase removed the unrelated permission-dialog interference. Automatic
+regrouping passed again. The Chinese layout test exposed cross-process fixture
+preferences not being loaded; fixture language now enters the app's normal localization
+path in its own process. The long-name test found the row's accessibility identifier was
+not exposed as expected while child elements had their own identifiers. Rows now expose
+one explicitly labelled button with a selected trait, and every failed assertion retains
+the current AX hierarchy. These checks must run again; their failures were not waived.

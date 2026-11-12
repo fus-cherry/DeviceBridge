@@ -27,7 +27,15 @@ struct DeviceBridgeApp: App {
             let suite = index.flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
                 ?? "dev.debugutility.fixture-language"
             let defaults = UserDefaults(suiteName: suite)!
-            if index == nil { defaults.set("en", forKey: "interfaceLanguage") }
+            let fixtureLanguageIndex = arguments.firstIndex(of: "--fixture-language")
+            let fixtureLanguage = fixtureLanguageIndex.flatMap {
+                arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil
+            }
+            if let fixtureLanguage, ["en", "zh-Hans"].contains(fixtureLanguage) {
+                // Set in the app process: XCTest's separate preferences cache must
+                // not decide whether the Chinese layout is actually exercised.
+                defaults.set(fixtureLanguage, forKey: "interfaceLanguage")
+            } else if index == nil { defaults.set("en", forKey: "interfaceLanguage") }
             _languageValue = AppStorage(wrappedValue: "system", "interfaceLanguage", store: defaults)
         }
     }

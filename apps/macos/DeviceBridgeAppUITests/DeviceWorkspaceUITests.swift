@@ -10,7 +10,7 @@ final class DeviceWorkspaceUITests: XCTestCase {
         let suite = "dev.debugutility.sidebar-test.\(UUID().uuidString)"
         defer { app.terminate(); UserDefaults.standard.removePersistentDomain(forName: suite) }
         UserDefaults(suiteName: suite)?.set("en", forKey: "interfaceLanguage")
-        app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-sidebar", "--language-test-suite", suite]
+        app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-sidebar", "--language-test-suite", suite, "--fixture-language", "en"]
         app.launch()
         app.activate()
         ensureSidebarWindow(app)
@@ -19,10 +19,11 @@ final class DeviceWorkspaceUITests: XCTestCase {
         let attention = app.buttons["devices-needing-attention-toggle"]
         let android = app.buttons["Android Test Device"]
         let iphone = app.buttons["iOS Test Device"]
+        recordSidebarHierarchy(app, name: "sidebar-initial-hierarchy")
         let harmony = app.buttons["device-row-harmonyos:UI-HARMONY"]
         XCTAssertTrue(android.exists, "ADB device must be visible before a command probe")
         XCTAssertTrue(iphone.exists, "paired wired iPhone must be visible before a command probe")
-        XCTAssertTrue(harmony.exists, "HDC Connected must be visible before a command probe")
+        XCTAssertTrue(harmony.exists, "HDC Connected must be visible before a command probe: \(app.debugDescription)")
         XCTAssertFalse(app.buttons["Offline Android"].exists)
         XCTAssertFalse(app.buttons["Authorization Required"].exists)
 
@@ -85,12 +86,13 @@ final class DeviceWorkspaceUITests: XCTestCase {
         let suite = "dev.debugutility.sidebar-chinese.\(UUID().uuidString)"
         defer { app.terminate(); UserDefaults.standard.removePersistentDomain(forName: suite) }
         UserDefaults(suiteName: suite)?.set("zh-Hans", forKey: "interfaceLanguage")
-        app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-sidebar", "--language-test-suite", suite]
+        app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-sidebar", "--language-test-suite", suite, "--fixture-language", "zh-Hans"]
         app.launch()
         app.activate()
         ensureSidebarWindow(app)
         let header = app.buttons["detected-devices-toggle"]
         XCTAssertTrue(header.waitForExistence(timeout: 10))
+        recordSidebarHierarchy(app, name: "sidebar-chinese-initial-hierarchy")
         XCTAssertEqual(header.label, "已发现设备")
         let longRow = app.buttons["device-row-harmonyos:UI-HARMONY"]
         XCTAssertTrue(longRow.exists)
@@ -111,13 +113,26 @@ final class DeviceWorkspaceUITests: XCTestCase {
         let state = FileManager.default.temporaryDirectory.appendingPathComponent("sidebar-state-\(UUID().uuidString)")
         XCTAssertNoThrow(try Data("offline".utf8).write(to: state))
         defer { app.terminate(); try? FileManager.default.removeItem(at: state) }
-        app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-sidebar", "--fixture-sidebar-refresh", "--fixture-sidebar-state", state.path]
+        app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-sidebar", "--fixture-sidebar-refresh", "--fixture-sidebar-state", state.path, "--fixture-language", "en"]
         app.launch()
         app.activate()
         ensureSidebarWindow(app)
         XCTAssertTrue(app.buttons["detected-devices-toggle"].waitForExistence(timeout: 3))
         XCTAssertFalse(app.buttons["Android Test Device"].exists,
                        "initial offline fixture must start in the collapsed attention group")
+        // Open and close a second real WindowGroup window. The first window's
+        // production timer must survive, not be stopped by the second onDisappear.
+        app.typeKey("n", modifierFlags: .command)
+        let twoWindows = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.windows.count == 2
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [twoWindows], timeout: 5), .completed)
+        app.typeKey("w", modifierFlags: .command)
+        let oneWindow = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.windows.count == 1
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [oneWindow], timeout: 5), .completed)
+        XCTAssertTrue(app.buttons["detected-devices-toggle"].exists)
         // Only the synthetic external transport changes; no view-model/refresh entry is invoked.
         // This gate prevents slow launch/AX enumeration from racing the initial-offline assertion.
         XCTAssertNoThrow(try Data("online".utf8).write(to: state, options: .atomic))
@@ -125,12 +140,40 @@ final class DeviceWorkspaceUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Android Test Device"].waitForExistence(timeout: 12),
                       "recovered discovery did not move to detected devices automatically")
         XCTAssertFalse(app.buttons["Offline Android"].exists)
+        // Closing the final workspace must also permit a clean reopen and new poll.
+        XCTAssertNoThrow(try Data("offline".utf8).write(to: state, options: .atomic))
+        let offlineAgain = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !app.buttons["Android Test Device"].exists
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [offlineAgain], timeout: 12), .completed)
+        app.typeKey("w", modifierFlags: .command)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.state == .notRunning || app.windows.count == 0
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        if app.state == .notRunning { app.launch() }
+        else { app.typeKey("n", modifierFlags: .command) }
+        app.activate()
+        ensureSidebarWindow(app)
+        XCTAssertTrue(app.buttons["detected-devices-toggle"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Android Test Device"].exists)
+        XCTAssertNoThrow(try Data("online".utf8).write(to: state, options: .atomic))
+        XCTAssertTrue(app.buttons["Android Test Device"].waitForExistence(timeout: 12),
+                      "reopened final workspace did not restart its inventory polling")
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = "sidebar-auto-recovery"
         attachment.lifetime = .keepAlways
         add(attachment)
     }
 
+
+    @MainActor
+    private func recordSidebarHierarchy(_ app: XCUIApplication, name: String) {
+        let attachment = XCTAttachment(string: app.debugDescription)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
 
     @MainActor
     private func ensureSidebarWindow(_ app: XCUIApplication) {

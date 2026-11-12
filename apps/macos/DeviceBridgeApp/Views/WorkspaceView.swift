@@ -158,6 +158,7 @@ struct WorkspaceView: View {
     @Binding var languageValue: String
     @Environment(\.interfaceLanguage) private var language
     @State private var selectedModule: WorkspaceModule = .information
+    @State private var workspaceHost = UUID()
     @State private var navigationPlatform: DevicePlatform?
     @State private var showsUnavailableDevices = false
     @State private var showsDetectedDevices = true
@@ -266,8 +267,8 @@ struct WorkspaceView: View {
             }
             .padding(24).frame(width: 580)
         }
-        .onAppear { model.start() }
-        .onDisappear { model.stop() }
+        .onAppear { model.attachWorkspace(workspaceHost) }
+        .onDisappear { model.detachWorkspace(workspaceHost) }
     }
 
     private var deviceSidebar: some View {
@@ -372,6 +373,8 @@ struct WorkspaceView: View {
         }
         .buttonStyle(.plain)
         .help("\(device.name)\n\(language.text(rowConnectionReason(device)))")
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(device.identity == model.selectedDeviceIdentity ? [.isButton, .isSelected] : [.isButton])
         .accessibilityLabel(device.name)
         .accessibilityValue(language.text(rowConnectionReason(device)))
         .accessibilityIdentifier("device-row-\(device.identity.rawValue)")
