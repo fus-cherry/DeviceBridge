@@ -2,7 +2,7 @@ name: Build and Release
 
 on:
   push:
-    branches: [main, cloud/harmony-video-file-reading, cloud/0.1.6-candidate, cloud/0.1.7-candidate]
+    branches: [main, cloud/harmony-video-file-reading, cloud/0.1.6-candidate, cloud/0.1.7-candidate, cloud/0.1.7-sidebar-fix]
     tags: ['v*']
   workflow_dispatch:
 
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   build:
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 60
     outputs:
       version: ${{ steps.version.outputs.version }}
       build: ${{ steps.version.outputs.build }}
@@ -99,6 +99,44 @@ jobs:
           gradle -p helpers/android --no-daemon testDebugUnitTest assembleRelease
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs \
             helpers/android/app/build/outputs/apk/release/app-release.apk
+      - name: Exercise sidebar controls on isolated macOS runner
+        timeout-minutes: 18
+        env:
+          DEVICE_BRIDGE_ANDROID_HELPER_APK: ${{ github.workspace }}/helpers/android/app/build/outputs/apk/release/app-release.apk
+          DEVICE_BRIDGE_ANDROID_HELPER_METADATA: ${{ github.workspace }}/helpers/android/app/build/outputs/apk/release/output-metadata.json
+        run: |
+          set -euo pipefail
+          # Synthetic inventories only. Never opts in to live-device tests or changes TCC.
+          mkdir -p .build
+          xcodebuild test -project apps/macos/DeviceBridge.xcodeproj \
+            -scheme DeviceBridge -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath .build/sidebar-ui-derived \
+            -resultBundlePath .build/sidebar-ui.xcresult \
+            -onlyUsePackageVersionsFromResolvedFile \
+            -only-testing:DeviceBridgeAppUITests/DeviceWorkspaceUITests/testSidebarDiscoveredDevicesAndFullRowDisclosures \
+            -only-testing:DeviceBridgeAppUITests/DeviceWorkspaceUITests/testSidebarAutomaticallyRegroupsRecoveredTransport \
+            -only-testing:DeviceBridgeAppUITests/DeviceWorkspaceUITests/testSidebarChineseLayoutAndLongDeviceName \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
+            2>&1 | tee .build/sidebar-ui.log
+      - name: Export sidebar screenshots
+        if: always()
+        run: |
+          if [[ -d .build/sidebar-ui.xcresult ]]; then
+            xcrun xcresulttool export attachments --path .build/sidebar-ui.xcresult \
+              --output-path .build/sidebar-ui-attachments || echo 'Screenshots remain in xcresult bundle'
+          fi
+      - name: Preserve sidebar interaction evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: DeviceBridge-sidebar-ui-${{ github.run_id }}
+          path: |
+            .build/sidebar-ui.log
+            .build/sidebar-ui.xcresult
+            .build/sidebar-ui-attachments
+          if-no-files-found: warn
+          retention-days: 14
       - name: Build and verify DMG
         id: package
         env:

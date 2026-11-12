@@ -145,12 +145,27 @@ public actor DeviceSessionStore {
     }
 
     @discardableResult
-    public func select(_ identity: DeviceIdentity) throws -> WorkspaceSnapshot {
+    public func select(_ identity: DeviceIdentity, expectedTransport: TransportCandidate? = nil) throws -> WorkspaceSnapshot {
         guard let selected = devices.first(where: { $0.identity == identity }) else {
             throw DeviceSessionStoreError.deviceNotFound
         }
         guard let preferredTransportID = selected.preferredTransportID else {
             throw DeviceSessionStoreError.noUsableTransport
+        }
+
+        if let expectedTransport {
+            // A readiness check may suspend while inventory changes. Atomically commit
+            // only the exact route it checked, never a newly preferred/reused route.
+            guard selected.authorization == .authorized,
+                  expectedTransport.identity == identity,
+                  preferredTransportID == expectedTransport.id,
+                  let current = selected.candidates.first(where: { $0.id == preferredTransportID }),
+                  current.identity == expectedTransport.identity,
+                  current.kind == expectedTransport.kind, current.source == expectedTransport.source,
+                  current.endpoint == expectedTransport.endpoint, current.metadata == expectedTransport.metadata,
+                  current.status == .candidate || current.status == .available else {
+                throw DeviceSessionStoreError.staleSession
+            }
         }
 
         invalidateOperations()

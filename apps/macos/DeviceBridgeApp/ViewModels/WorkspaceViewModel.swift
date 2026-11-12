@@ -183,6 +183,10 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     private var hasStarted = false
     private var refreshTask: Task<Void, Never>?
     private var refreshRevision = 0
+    // Only explicit selection/rebinding grants readiness. Discovery may replace or
+    // disconnect that session, but must never reactivate it from transport metadata.
+    private var commandReadySession: ConnectionSession?
+    private var sidebarFixtureScan = 0
     private var selectionTask: Task<Void, Never>?
     private var clipboardOperationTask: Task<Void, Never>?
     private var screenshotOperationTask: Task<Void, Never>?
@@ -289,7 +293,9 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
             self?.objectWillChange.send()
         }
         if arguments.contains("--fixture-devices") {
-            devices = Self.fixtureDevices()
+            devices = arguments.contains("--fixture-sidebar")
+                ? Self.sidebarFixtureDevices(androidOffline: arguments.contains("--fixture-sidebar-refresh"))
+                : Self.fixtureDevices()
         }
     }
 
@@ -592,6 +598,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
 
     func stop() {
         stopAgentAPI()
+        commandReadySession = nil
         invalidateAndroidCommands()
         deviceInformation.invalidate()
         detachIOSRunner()
@@ -686,6 +693,17 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     private func refresh(revision: Int) async {
         guard !Task.isCancelled, refreshRevision == revision else { return }
         if arguments.contains("--fixture-devices") {
+            if arguments.contains("--fixture-sidebar") {
+                sidebarFixtureScan += 1
+                let gateIndex = arguments.firstIndex(of: "--fixture-sidebar-state")
+                let gatePath = gateIndex.flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
+                let gate = gatePath.flatMap { try? FileHandle(forReadingFrom: URL(fileURLWithPath: $0)) }
+                let gateBytes = try? gate?.read(upToCount: 16)
+                try? gate?.close()
+                let recovered = gatePath == nil ? sidebarFixtureScan >= 2 : gateBytes == Data("online".utf8)
+                devices = Self.sidebarFixtureDevices(androidOffline:
+                    arguments.contains("--fixture-sidebar-refresh") && !recovered)
+            }
             await store.replaceInventory(devices)
             let snapshot = await store.snapshot()
             guard !Task.isCancelled, refreshRevision == revision else { return }
@@ -765,6 +783,15 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     }
 
     private func publishInventory(_ snapshot: WorkspaceSnapshot) {
+        if let commandReadySession, snapshot.session != commandReadySession {
+            self.commandReadySession = nil
+            // Android maintenance owns its own health/recovery transitions. Other
+            // platforms need an explicit reselect after inventory changes the session.
+            if maintenance == nil {
+                connectionHealth = .actionRequired
+                cancelDisconnectedContent()
+            }
+        }
         agentController.validateSession(snapshot.session)
         if let binding = androidCommandBinding,
            snapshot.session != binding.session || !snapshot.devices.contains(where: { device in
@@ -865,9 +892,12 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         }
         if intent == .user, !isSelecting,
            selectedDeviceIdentity == identity,
+           commandReadySession?.deviceIdentity == identity,
+           commandReadySession?.state == .active,
            connectionHealth == .healthy || connectionHealth == .recovered {
             return
         }
+        commandReadySession = nil
         deviceSelection = .checking(candidate)
         invalidateAndroidCommands()
         deviceInformation.invalidate()
@@ -990,6 +1020,11 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                     }
                     guard !Task.isCancelled, selectionRevision == revision else { return }
                 }
+                guard let preferredTransportID = device.preferredTransportID,
+                      let expectedTransport = device.candidates.first(where: { $0.id == preferredTransportID }) else {
+                    throw DeviceSessionStoreError.noUsableTransport
+                }
+                let checkedAt: Date
                 if !self.arguments.contains("--fixture-devices") {
                     let outcome = await DeviceCommandProbe(
                         adbURL: self.adbURL,
@@ -998,7 +1033,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                         hdcURL: self.hdcURL
                     ).probe(device)
                     guard !Task.isCancelled else { return }
-                    guard case let .ready(checkedAt) = outcome else {
+                    guard case let .ready(probeCheckedAt) = outcome else {
                         if outcome.failure?.code != .cancelled {
                             let failure = outcome.failure ?? OperationFailure(code: .failure,
                                 safeMessage: "The selected device is not command-ready.")
@@ -1008,17 +1043,23 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                         }
                         return
                     }
-                    self.lastSuccessfulCommandAt = checkedAt
+                    checkedAt = probeCheckedAt
                 } else {
-                    self.lastSuccessfulCommandAt = Date()
+                    checkedAt = Date()
                 }
 
-                let snapshot = try await store.select(identity)
+                let snapshot = try await store.select(identity, expectedTransport: expectedTransport)
                 guard !Task.isCancelled else { return }
                 if let session = snapshot.session { await store.markCommandReady(session: session) }
                 guard !Task.isCancelled, selectionRevision == revision else { return }
                 let readySnapshot = await store.snapshot()
                 guard !Task.isCancelled, selectionRevision == revision else { return }
+                guard let readySession = readySnapshot.session,
+                      readySession == snapshot.session, readySession.state == .active else {
+                    throw DeviceSessionStoreError.staleSession
+                }
+                commandReadySession = readySession
+                lastSuccessfulCommandAt = checkedAt
                 publishInventory(readySnapshot)
                 deviceSelection = nil
                 connectionHealth = .healthy
@@ -2636,6 +2677,22 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         }
 #endif
         return nil
+    }
+
+    /// Uses production parsers so UI fixtures cannot silently replace discovered candidates
+    /// with command-verified transports. No device process is started by these fixtures.
+    private static func sidebarFixtureDevices(androidOffline: Bool) -> [DeviceRecord] {
+        let adb = """
+        List of devices attached
+        UI-ANDROID \(androidOffline ? "offline" : "device") usb:1 model:Android_Test_Device transport_id:701
+        UI-OFFLINE offline usb:2 model:Offline_Android transport_id:702
+        UI-UNAUTHORIZED unauthorized usb:3 model:Authorization_Required transport_id:703
+        """
+        let ios = Data(#"{"result":{"devices":[{"identifier":"UI-IOS","hardwareProperties":{"udid":"UI-IOS","platform":"iOS"},"connectionProperties":{"transportType":"wired","pairingState":"paired"},"deviceProperties":{"name":"iOS Test Device","developerModeStatus":"enabled"}}]}}"#.utf8)
+        let candidates = ((try? ADBDeviceParser().parse(adb, observedAt: Date())) ?? [])
+            + ((try? HDCDeviceParser().parse("UI-HARMONY USB Connected Harmony Test Device with a long name for narrow sidebar alignment 中文设备 hdc", observedAt: Date())) ?? [])
+            + ((try? CoreDeviceParser().parse(ios, observedAt: Date())) ?? [])
+        return DeviceInventory.aggregate(candidates)
     }
 
     private static func fixtureDevices() -> [DeviceRecord] {

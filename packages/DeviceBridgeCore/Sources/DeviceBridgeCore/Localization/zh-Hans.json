@@ -741,5 +741,11 @@
   "HDC connection does not grant all file or media permissions. Availability depends on the device and system version.": "连接 HDC 不代表已获得所有文件和媒体权限，实际可用范围取决于设备和系统版本。",
   "File and media access is checked when requested; a connected device does not guarantee access to every folder or media source.": "文件和媒体访问会在操作时检查；设备已连接不代表所有目录和媒体源都能访问。",
   "Connection help": "连接帮助",
-  "Device capabilities": "设备功能状态"
+  "Device capabilities": "设备功能状态",
+  "Detected devices": "已发现设备",
+  "Offline or needs attention": "离线或需要处理",
+  "Devices refresh automatically every 5 seconds": "每 5 秒自动刷新设备",
+  "No detected devices ready for a connection check": "尚未发现可尝试连接的设备",
+  "Expanded": "已展开",
+  "Collapsed": "已折叠"
 }

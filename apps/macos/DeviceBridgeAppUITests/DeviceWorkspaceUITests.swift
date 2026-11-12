@@ -2,6 +2,133 @@ import AppKit
 import XCTest
 
 final class DeviceWorkspaceUITests: XCTestCase {
+    /// Hosted macOS CI only: real SwiftUI controls with production parser fixtures.
+    /// No physical devices, clipboard operations, privileged prompts or user computer input.
+    @MainActor
+    func testSidebarDiscoveredDevicesAndFullRowDisclosures() {
+        let app = XCUIApplication()
+        let suite = "dev.debugutility.sidebar-test.\(UUID().uuidString)"
+        defer { app.terminate(); UserDefaults.standard.removePersistentDomain(forName: suite) }
+        UserDefaults(suiteName: suite)?.set("en", forKey: "interfaceLanguage")
+        app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-sidebar", "--language-test-suite", suite]
+        app.launch()
+        app.activate()
+        XCTAssertTrue(app.buttons["detected-devices-toggle"].waitForExistence(timeout: 10))
+        let detected = app.buttons["detected-devices-toggle"]
+        let attention = app.buttons["devices-needing-attention-toggle"]
+        let android = app.buttons["Android Test Device"]
+        let iphone = app.buttons["iOS Test Device"]
+        let harmony = app.buttons["device-row-harmonyos:UI-HARMONY"]
+        XCTAssertTrue(android.exists, "ADB device must be visible before a command probe")
+        XCTAssertTrue(iphone.exists, "paired wired iPhone must be visible before a command probe")
+        XCTAssertTrue(harmony.exists, "HDC Connected must be visible before a command probe")
+        XCTAssertFalse(app.buttons["Offline Android"].exists)
+        XCTAssertFalse(app.buttons["Authorization Required"].exists)
+
+        // Click header TEXT area (not the chevron), then far-right whitespace/count.
+        for _ in 0..<3 {
+            detected.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5)).click()
+            XCTAssertFalse(android.exists)
+            detected.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).click()
+            XCTAssertTrue(android.waitForExistence(timeout: 2))
+        }
+        attention.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5)).click()
+        XCTAssertTrue(app.buttons["Offline Android"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["Authorization Required"].exists)
+        attention.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).click()
+        XCTAssertFalse(app.buttons["Offline Android"].exists)
+
+        // Verify row widths and fixed leading edges on the actual laid-out controls.
+        XCTAssertEqual(android.frame.minX, iphone.frame.minX, accuracy: 1)
+        XCTAssertEqual(android.frame.minX, harmony.frame.minX, accuracy: 1)
+        XCTAssertEqual(android.frame.width, iphone.frame.width, accuracy: 1)
+        XCTAssertGreaterThan(android.frame.width, 200)
+        for row in [android, iphone, harmony] {
+            XCTAssertGreaterThanOrEqual(row.frame.minX, detected.frame.minX - 1)
+            XCTAssertLessThanOrEqual(row.frame.maxX, detected.frame.maxX + 1,
+                                     "long names must remain within the SIDEBAR, not merely the window")
+        }
+        let before = XCTAttachment(screenshot: app.screenshot())
+        before.name = "sidebar-detected-devices"
+        before.lifetime = .keepAlways
+        add(before)
+
+        android.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.3)).click()
+        XCTAssertTrue(app.staticTexts["Android Test Device · USB"].waitForExistence(timeout: 5))
+        // Reselect same device and refresh repeatedly; controls must remain usable.
+        android.click()
+        app.buttons["refresh-devices"].click()
+        XCTAssertTrue(android.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Android Test Device · USB"].exists)
+        detected.click() // Keep the nested guide in the viewport without coordinate scrolling.
+        app.buttons["device-connection-guides-toggle"].coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)).click()
+        let sidebar = app.scrollViews["device-sidebar"]
+        let guide = sidebar.buttons["Android connection guide"]
+        XCTAssertTrue(guide.waitForExistence(timeout: 2))
+        let step = sidebar.staticTexts["Connect a data-capable USB cable, unlock Android and enable USB debugging in Developer options."]
+        guide.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        XCTAssertTrue(step.waitForExistence(timeout: 2), "nested guide text must expand it")
+        guide.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).click()
+        XCTAssertFalse(step.exists, "nested guide whitespace must collapse it")
+        guide.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        XCTAssertTrue(step.waitForExistence(timeout: 2))
+        let after = XCTAttachment(screenshot: app.screenshot())
+        after.name = "sidebar-selected-and-help"
+        after.lifetime = .keepAlways
+        add(after)
+    }
+
+    @MainActor
+    func testSidebarChineseLayoutAndLongDeviceName() {
+        let app = XCUIApplication()
+        let suite = "dev.debugutility.sidebar-chinese.\(UUID().uuidString)"
+        defer { app.terminate(); UserDefaults.standard.removePersistentDomain(forName: suite) }
+        UserDefaults(suiteName: suite)?.set("zh-Hans", forKey: "interfaceLanguage")
+        app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-sidebar", "--language-test-suite", suite]
+        app.launch()
+        app.activate()
+        let header = app.buttons["detected-devices-toggle"]
+        XCTAssertTrue(header.waitForExistence(timeout: 10))
+        XCTAssertEqual(header.label, "已发现设备")
+        let longRow = app.buttons["device-row-harmonyos:UI-HARMONY"]
+        XCTAssertTrue(longRow.exists)
+        XCTAssertLessThanOrEqual(longRow.frame.maxX, header.frame.maxX + 1)
+        header.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5)).click()
+        XCTAssertFalse(longRow.exists)
+        header.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).click()
+        XCTAssertTrue(longRow.waitForExistence(timeout: 2))
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "sidebar-chinese-long-name"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
+    func testSidebarAutomaticallyRegroupsRecoveredTransport() {
+        let app = XCUIApplication()
+        let state = FileManager.default.temporaryDirectory.appendingPathComponent("sidebar-state-\(UUID().uuidString)")
+        XCTAssertNoThrow(try Data("offline".utf8).write(to: state))
+        defer { app.terminate(); try? FileManager.default.removeItem(at: state) }
+        app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-sidebar", "--fixture-sidebar-refresh", "--fixture-sidebar-state", state.path]
+        app.launch()
+        app.activate()
+        XCTAssertTrue(app.buttons["detected-devices-toggle"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["Android Test Device"].exists,
+                       "initial offline fixture must start in the collapsed attention group")
+        // Only the synthetic external transport changes; no view-model/refresh entry is invoked.
+        // This gate prevents slow launch/AX enumeration from racing the initial-offline assertion.
+        XCTAssertNoThrow(try Data("online".utf8).write(to: state, options: .atomic))
+        // No refresh click: the actual five-second inventory timer must move it back.
+        XCTAssertTrue(app.buttons["Android Test Device"].waitForExistence(timeout: 12),
+                      "recovered discovery did not move to detected devices automatically")
+        XCTAssertFalse(app.buttons["Offline Android"].exists)
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "sidebar-auto-recovery"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+
     /// Opt-in diagnosis of the shipped app. No fixture mode, clipboard read/write or VM start.
     @MainActor
     func testOptedInLiveIOSPreparation() throws {

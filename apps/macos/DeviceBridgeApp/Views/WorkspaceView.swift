@@ -160,6 +160,8 @@ struct WorkspaceView: View {
     @State private var selectedModule: WorkspaceModule = .information
     @State private var navigationPlatform: DevicePlatform?
     @State private var showsUnavailableDevices = false
+    @State private var showsDetectedDevices = true
+    @State private var showsConnectionHelp = false
     @State private var showsAgentGuide = false
     @State private var confirmsIOSConnectionRepair = false
     @State private var iosRepairProposal: (identity: DeviceIdentity, revision: Int)?
@@ -168,7 +170,7 @@ struct WorkspaceView: View {
         NavigationSplitView {
             deviceSidebar
                 .navigationTitle(language.text("Devices"))
-                .navigationSplitViewColumnWidth(min: 220, ideal: 250)
+                .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 400)
         } detail: {
             if let selection = model.deviceSelection {
                 deviceSelectionView(selection)
@@ -268,54 +270,64 @@ struct WorkspaceView: View {
         .onDisappear { model.stop() }
     }
 
-    @ViewBuilder
     private var deviceSidebar: some View {
-        if model.devices.isEmpty, !model.isRefreshing {
-            VStack {
-            ContentUnavailableView(language.text("No devices"),
-                systemImage: "cable.connector",
-                description: Text(language.text("Connect an authorized Android, iOS or HarmonyOS device, then refresh."))
-            )
-            connectionGuides.padding()
-            }
-        } else {
-            List {
-                Section { connectionGuides }
-                Section(language.text("Available to connect")) {
-                    let available = model.devices.filter { connectionPresentation($0).canAttemptConnection }
-                    if available.isEmpty {
-                        Text(language.text("No connectable transports detected")).font(.caption).foregroundStyle(.secondary)
-                    }
-                    ForEach(available) { device in deviceRow(device) }
+        let detected = model.devices.filter { connectionPresentation($0).canAttemptConnection }
+        let attention = model.devices.filter { !connectionPresentation($0).canAttemptConnection }
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.caption).frame(width: 16)
+                    Text(language.text("Devices refresh automatically every 5 seconds"))
+                        .font(.caption).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    if model.isRefreshing { ProgressView().controlSize(.small) }
                 }
-                let unavailable = model.devices.filter { !connectionPresentation($0).canAttemptConnection }
-                if !unavailable.isEmpty {
-                    DisclosureGroup(isExpanded: $showsUnavailableDevices) {
-                        ForEach(unavailable) { device in deviceRow(device) }
-                    } label: {
-                        Text(InterfaceMessage("Unavailable or needs attention ({0})", arguments: [String(unavailable.count)]).render(in: language))
-                    }
-                    .accessibilityIdentifier("devices-needing-attention")
-                }
-            }
-            .overlay {
-                if model.isRefreshing {
-                    ProgressView(language.text("Discovering devices…"))
-                        .padding()
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-                        .allowsHitTesting(false)
-                }
-            }
-        }
-    }
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("device-auto-refresh-status")
 
-    private var connectionGuides: some View {
-        DisclosureGroup(language.text("Connection help")) {
-            ForEach([DevicePlatform.android, .iOS, .harmonyOS], id: \.self) { platform in
-                platformGuide(platform)
+                SidebarSection(title: language.text("Detected devices"), count: detected.count,
+                               identifier: "detected-devices", isExpanded: $showsDetectedDevices) {
+                    if detected.isEmpty {
+                        Text(language.text(model.isRefreshing ? "Discovering devices…" : "No detected devices ready for a connection check"))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(10)
+                            .accessibilityIdentifier("detected-devices-empty")
+                    }
+                    ForEach(detected) { device in deviceRow(device) }
+                }
+
+                if !attention.isEmpty {
+                    SidebarSection(title: language.text("Offline or needs attention"), count: attention.count,
+                                   identifier: "devices-needing-attention", isExpanded: $showsUnavailableDevices) {
+                        ForEach(attention) { device in deviceRow(device) }
+                    }
+                }
+
+                if !model.diagnostics.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(model.diagnostics, id: \.self) { diagnostic in
+                            Label(language.text(diagnostic), systemImage: "exclamationmark.circle")
+                                .font(.caption).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .accessibilityIdentifier("device-discovery-diagnostics")
+                }
+
+                SidebarSection(title: language.text("Connection help"), count: nil,
+                               identifier: "device-connection-guides", isExpanded: $showsConnectionHelp) {
+                    ForEach([DevicePlatform.android, .iOS, .harmonyOS], id: \.self) { platform in
+                        platformGuide(platform).padding(.horizontal, 8).padding(.vertical, 4)
+                    }
+                }
             }
+            .padding(12)
         }
-        .accessibilityIdentifier("device-connection-guides")
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.35))
+        .accessibilityIdentifier("device-sidebar")
     }
 
     private func platformGuide(_ platform: DevicePlatform) -> some View {
@@ -327,6 +339,7 @@ struct WorkspaceView: View {
                 }
             }
         }
+        .disclosureGroupStyle(FullRowDisclosureStyle())
     }
 
     private func connectionPresentation(_ device: DeviceRecord) -> DeviceConnectionPresentation {
@@ -342,10 +355,11 @@ struct WorkspaceView: View {
     }
 
     private func rowConnectionReason(_ device: DeviceRecord) -> String {
-        if case let .failed(failedDevice, problem) = model.deviceSelection, failedDevice.identity == device.identity {
-            return problem.safeMessage
+        let presentation = connectionPresentation(device)
+        if device.identity == model.selectedDeviceIdentity, model.connectionHealth == .healthy {
+            return healthLabel
         }
-        return device.identity == model.selectedDeviceIdentity ? healthLabel : connectionPresentation(device).reason
+        return presentation.reason
     }
 
     private func deviceRow(_ device: DeviceRecord) -> some View {
@@ -353,10 +367,14 @@ struct WorkspaceView: View {
             DeviceRow(device: device,
                 isSelected: device.identity == (model.deviceSelection?.device.identity ?? model.selectedDeviceIdentity),
                 isChecking: model.deviceSelection?.device.identity == device.identity && model.deviceSelection?.isChecking == true,
-                connectionReason: rowConnectionReason(device))
+                connectionReason: rowConnectionReason(device),
+                canAttemptConnection: connectionPresentation(device).canAttemptConnection)
         }
         .buttonStyle(.plain)
+        .help("\(device.name)\n\(language.text(rowConnectionReason(device)))")
         .accessibilityLabel(device.name)
+        .accessibilityValue(language.text(rowConnectionReason(device)))
+        .accessibilityIdentifier("device-row-\(device.identity.rawValue)")
     }
 
     private func deviceSelectionView(_ selection: DeviceSelectionPresentation) -> some View {
@@ -698,35 +716,129 @@ private struct WorkspaceModuleButton: View {
     }
 }
 
+/// Explicit button headers make the entire row (including text/whitespace) clickable.
+/// Do not depend on the native macOS DisclosureGroup's chevron-only hit target.
+private struct SidebarSection<Content: View>: View {
+    let title: String
+    let count: Int?
+    let identifier: String
+    @Binding var isExpanded: Bool
+    @ViewBuilder var content: Content
+    @Environment(\.interfaceLanguage) private var language
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button { isExpanded.toggle() } label: {
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 14, height: 16)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Text(title).font(.subheadline.weight(.semibold))
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    if let count {
+                        Text(String(count)).font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(.quaternary, in: Capsule())
+                            .accessibilityHidden(true)
+                    }
+                }
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(title)
+            .accessibilityValue(language.text(isExpanded ? "Expanded" : "Collapsed"))
+            .accessibilityIdentifier("\(identifier)-toggle")
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 6) { content }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier(identifier)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct FullRowDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { configuration.isExpanded.toggle() } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold)).frame(width: 14)
+                        .accessibilityHidden(true)
+                    configuration.label
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if configuration.isExpanded { configuration.content.padding(.leading, 22) }
+        }
+    }
+}
+
 private struct DeviceRow: View {
     let device: DeviceRecord
     let isSelected: Bool
     let isChecking: Bool
     let connectionReason: String
+    let canAttemptConnection: Bool
     @Environment(\.interfaceLanguage) private var language
 
+    private var symbol: String {
+        switch device.identity.platform {
+        case .iOS: "iphone"
+        case .android: "smartphone"
+        case .harmonyOS: "smartphone"
+        }
+    }
+
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: device.identity.platform == .iOS ? "iphone" : "rectangle.and.hand.point.up.left")
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 3) {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 19))
+                .frame(width: 32, height: 36, alignment: .center)
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+                .accessibilityIdentifier("device-icon-\(device.identity.rawValue)")
+            VStack(alignment: .leading, spacing: 4) {
                 Text(device.name)
-                    .fontWeight(isSelected ? .semibold : .regular)
-                Text(language.text(connectionReason)).font(.caption).foregroundStyle(.secondary)
+                    .font(.subheadline.weight(isSelected ? .semibold : .medium))
+                    .lineLimit(2).multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("device-name-\(device.identity.rawValue)")
+                Text(language.text(connectionReason))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(device.identity.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
             }
-            Spacer()
-            if isChecking {
-                ProgressView().controlSize(.small)
-            } else if isSelected {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(Color.accentColor)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Group {
+                if isChecking { ProgressView().controlSize(.mini) }
+                else if isSelected { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor) }
+                else { Image(systemName: canAttemptConnection ? "circle" : "exclamationmark.circle").foregroundStyle(.secondary) }
             }
+            .frame(width: 16, height: 20)
+            .accessibilityHidden(true)
         }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isSelected ? Color.accentColor.opacity(0.10) : Color.secondary.opacity(0.045),
+                    in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9)
+            .stroke(isSelected ? Color.accentColor.opacity(0.4) : Color.clear, lineWidth: 1)
+            .accessibilityHidden(true))
         .contentShape(Rectangle())
-        .padding(.vertical, 4)
     }
 }

@@ -251,6 +251,50 @@ struct DeviceSessionStoreTests {
         #expect(await !store.finishShellOperation(shell, terminal: .failure))
     }
 
+    @Test("a checked route cannot commit a different preferred inventory route")
+    func checkedRouteRejectsReplacement() async throws {
+        let original = try device(rawID: "phone", transportID: "route-a")
+        let replacement = try device(rawID: "phone", transportID: "route-b")
+        let store = DeviceSessionStore()
+        await store.replaceInventory([original])
+        let checked = try #require(original.candidates.first)
+        await store.replaceInventory([replacement])
+        await #expect(throws: DeviceSessionStoreError.staleSession) {
+            try await store.select(original.identity, expectedTransport: checked)
+        }
+        #expect(await store.snapshot().selectedDeviceIdentity == nil)
+        #expect(await store.snapshot().session == nil)
+        let accepted = try await store.select(replacement.identity,
+            expectedTransport: #require(replacement.candidates.first))
+        #expect(accepted.session?.transportID == "route-b")
+    }
+
+    @Test("route check ignores timestamps but rejects changed routing metadata or authorization")
+    func checkedRouteAdmissionIsAtomic() async throws {
+        let original = try device(rawID: "phone", transportID: "route-a")
+        let checked = try #require(original.candidates.first)
+        let store = DeviceSessionStore()
+        func observed(metadata: [String: String] = [:], auth: AuthorizationState = .authorized) throws -> DeviceRecord {
+            let refreshed = try TransportCandidate(id: checked.id, identity: checked.identity,
+                kind: checked.kind, source: checked.source, status: .candidate,
+                observedAt: Date(), metadata: metadata)
+            return DeviceRecord(identity: original.identity, name: original.name,
+                authorization: auth, candidates: [refreshed], preferredTransportID: refreshed.id)
+        }
+        await store.replaceInventory([try observed()])
+        _ = try await store.select(original.identity, expectedTransport: checked)
+        await store.disconnect()
+        await store.replaceInventory([try observed(metadata: ["adbSerial": "different-route"])])
+        await #expect(throws: DeviceSessionStoreError.staleSession) {
+            try await store.select(original.identity, expectedTransport: checked)
+        }
+        await store.replaceInventory([try observed(auth: .denied)])
+        await #expect(throws: DeviceSessionStoreError.staleSession) {
+            try await store.select(original.identity, expectedTransport: checked)
+        }
+        #expect(await store.snapshot().session?.state != .active)
+    }
+
     private func device(rawID: String, transportID: String) throws -> DeviceRecord {
         let identity = try DeviceIdentity(rawValue: rawID, stability: .stable, platform: .iOS)
         let candidate = try TransportCandidate(

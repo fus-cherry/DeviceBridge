@@ -6,6 +6,7 @@ import Foundation
 struct IOSRunnerWorkspaceChecks {
     @MainActor
     static func main() async throws {
+        try await activeHelperRemoval()
         try await informationBindingLoss()
         try await preparationPresentation()
         try await overlappingContentActions()
@@ -96,6 +97,58 @@ struct IOSRunnerWorkspaceChecks {
         try require(!failedModel.isConnectionMaintained, "expired channel still advertised maintenance")
         try await wait { await failedManager.stops > 0 }
         print("PASS: iOS Workspace screenshot isolation, exact capture, stable device binding, metadata-only 10-second renewal, route invalidation, failed heartbeat, Stop and late completion")
+    }
+
+    @MainActor
+    static func activeHelperRemoval() async throws {
+        let channel = WorkspacePhoneChannel(clipboardAvailable: true)
+        let screenshotManager = WorkspacePhoneManager(channel: channel)
+        let clipboardManager = WorkspacePhoneManager(channel: channel)
+        let inventory = WorkspacePhoneInventory()
+        let model = WorkspaceViewModel(arguments: [], runner: inventory,
+            iosScreenshotRunnerFactory: { _ in screenshotManager },
+            iosClipboardHostFactory: { _ in clipboardManager },
+            iosMemoryProvider: WorkspaceNoIOSMemory())
+        defer { model.stop() }
+        model.start()
+        try await wait { !model.isRefreshing && model.devices.count == 1 }
+        let identity = model.devices[0].identity
+        model.select(identity)
+        try await wait { !model.isSelecting && model.connectionHealth == .healthy }
+        model.reconnectIOSPreparation(.screenshot)
+        model.reconnectIOSPreparation(.clipboard)
+        try await wait { model.screenshotReadiness == .ready && model.clipboardReadiness == .ready && model.isConnectionMaintained }
+        try require(await channel.contentRequests == 0, "helper preparation must not automatically read content")
+
+        await inventory.setPresent(false)
+        model.requestRefresh()
+        try await wait { !model.isRefreshing && model.devices.isEmpty }
+        try require(model.connectionHealth == .actionRequired && !model.agentActionsAllowed,
+                    "active iOS helper maintenance hid a disconnected selected session")
+        try require(!model.isScreenshotReady && !model.isClipboardReady && !model.isConnectionMaintained,
+                    "selected phone removal retained stale helper readiness or maintenance")
+        try await wait {
+            let screenshotStops = await screenshotManager.stops
+            let clipboardStops = await clipboardManager.stops
+            return screenshotStops > 0 && clipboardStops > 0
+        }
+        let lastSuccessfulCommandAt = model.lastSuccessfulCommandAt
+        await inventory.setPresent(true)
+        model.requestRefresh()
+        try await wait { !model.isRefreshing && model.devices.count == 1 }
+        try require(model.connectionHealth == .actionRequired && model.lastSuccessfulCommandAt == lastSuccessfulCommandAt,
+                    "reappearing inventory automatically restored iOS readiness")
+        try require(!model.isScreenshotReady && !model.isClipboardReady,
+                    "reappearing metadata automatically restarted content helpers")
+        model.select(identity)
+        try await wait { !model.isSelecting && model.connectionHealth == .healthy }
+        guard case .availableOnDemand = model.screenshotReadiness,
+              case .availableOnDemand = model.clipboardReadiness else {
+            throw Failure.failed("explicit route reselect should leave iOS helpers available only on demand")
+        }
+        try require(!model.isConnectionMaintained, "route reselect automatically restarted iOS helper maintenance")
+        try require(await channel.contentRequests == 0, "disconnect/reselect lifecycle read device content")
+        print("PASS: active iOS screenshot/clipboard helpers cannot suppress removal invalidation; reappearance stays unverified until explicit selection")
     }
 
     @MainActor
@@ -501,8 +554,10 @@ private actor WorkspacePhoneChannel: IOSRunnerScreenshotChannel, IOSRunnerClipbo
 
 private actor WorkspacePhoneInventory: HostCommandRunning {
     private var route = "11111111-1111-4111-8111-111111111111"
+    private var present = true
     private let transportType: String
     init(transportType: String = "wired") { self.transportType = transportType }
+    func setPresent(_ present: Bool) { self.present = present }
     func changeRoute() { route = "22222222-2222-4222-8222-222222222222" }
     func run(_ request: HostCommandRequest) throws -> HostCommandResult {
         if request.arguments == ["devices", "-l"] {
@@ -511,7 +566,8 @@ private actor WorkspacePhoneInventory: HostCommandRunning {
         if request.arguments.starts(with: ["devicectl", "list", "devices"]),
            let index = request.arguments.firstIndex(of: "--json-output") {
             let json = #"{"result":{"devices":[{"identifier":"workspace-coredevice-route","hardwareProperties":{"udid":"workspace-test-udid","platform":"iOS","marketingName":"Test iPhone"},"connectionProperties":{"transportType":"wired","pairingState":"paired","tunnelState":"connected"},"deviceProperties":{"name":"Test iPhone","osVersionNumber":"18.3.1","developerModeStatus":"enabled","isLocked":false}}]}}"#
-            try Data(json.replacingOccurrences(of: "workspace-coredevice-route", with: route)
+            let output = present ? json : #"{"result":{"devices":[]}}"#
+            try Data(output.replacingOccurrences(of: "workspace-coredevice-route", with: route)
                 .replacingOccurrences(of: "\"transportType\":\"wired\"", with: "\"transportType\":\"\(transportType)\"").utf8)
                 .write(to: URL(fileURLWithPath: request.arguments[index + 1]))
         } else if request.arguments.starts(with: ["devicectl", "device", "info", "details"]),
@@ -526,6 +582,14 @@ private actor WorkspacePhoneInventory: HostCommandRunning {
             throw IOSRunnerWorkspaceChecks.Failure.failed("unexpected external command")
         }
         return HostCommandResult(exitCode: 0, standardOutput: Data(), standardError: Data())
+    }
+}
+
+private struct WorkspaceNoIOSMemory: IOSWorkspaceVMProviding {
+    func applications(session: ConnectionSession) async throws -> [TargetApplication] { [] }
+    func binding(store: DeviceSessionStore, session: ConnectionSession,
+                 applicationID: String) async throws -> IOSVerifiedVMBinding {
+        throw IOSRunnerWorkspaceChecks.Failure.failed("helper lifecycle checks must never open a VM channel")
     }
 }
 
