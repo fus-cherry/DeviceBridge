@@ -47,7 +47,7 @@ xcodebuild build -project apps/macos/DeviceBridge.xcodeproj \
 
 产物位于 `.build/xcode-derived/Build/Products/Debug/DeviceBridge.app`。`Package Managed Helpers` 构建阶段会嵌入 APK、iOS runner 项目及其依赖源码，并生成带版本及 Android SHA-256 的 manifest，存入 `DeviceBridge.app/Contents/Resources/Helpers`。缺少 APK 或版本不匹配会终止打包。
 
-iOS 开发签名使用当前 Mac 已有的身份和描述文件。不要把个人 Team ID 写入共享源码；不要未经授权启用 provisioning updates、注册设备或创建证书。应用设置中的 Team ID 不等于 Mac Developer ID 分发证书。
+iOS 开发签名使用当前 Mac 已有的身份和描述文件。当前私有构建按所有者明确要求统一使用 `5F6294RLX4`，忽略旧 `iosSigningTeamID` 偏好，并移除通用设置中的团队输入框。团队号只是选择/校验开发身份的标识，不是证书或私钥；目标 Mac 仍须有匹配的 Apple Development 身份、描述文件及设备授权。不要未经授权启用 provisioning updates、注册设备或创建证书。此 iOS runner 配置与 Mac Developer ID 分发签名的 `APPLE_TEAM_ID`、P12 等 Secrets 独立，不能相互替代或自动改写。历史 `apps/device_companion` Flutter 工程不参与当前打包，遗留团队已清空。
 
 ## 自动检查
 
@@ -103,7 +103,7 @@ export DEVICE_BRIDGE_ANDROID_HELPER_METADATA="$PWD/helpers/android/app/build/out
 
 ## 手动 Developer ID 归档
 
-本节是可选的正式分发流程；默认 GitHub 内部分发包采用 ad-hoc 签名，不运行此公证流程。
+本节是可选的手动正式分发流程；默认基础产物采用 ad-hoc 签名。0.1.8 候选另有隔离的 Apple 签名/公证任务，必须以实际结果为准，见 [Apple 签名说明](apple-signing.md)。
 
 在本机安装 `Developer ID Application` 证书，并为目标设置自己的开发团队。Release 配置开启 Hardened Runtime，关闭 App Sandbox 以访问本地开发工具，不注入 `get-task-allow`，不申请 runtime exceptions。
 

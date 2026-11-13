@@ -8,6 +8,8 @@ signing attempt; a manual dispatch on that same branch requires `sign_apple=true
 Other development branches, pull requests, main, and tags do not enter this job.
 No Release is created or main merged by the signing job.
 
+The app's built-in iOS runner development team is a separate configuration. The owner's current private build uses `5F6294RLX4` for local iOS runner builds and ignores the old editable preference. That does not alter `APPLE_TEAM_ID`, select a Mac Developer ID certificate, or provide any signing key/provisioning profile. Mac distribution still requires the actual P12 identity to match its configured Apple Secret.
+
 ## Credential scope
 
 Configure these existing repository Secrets directly in GitHub, never in chat or

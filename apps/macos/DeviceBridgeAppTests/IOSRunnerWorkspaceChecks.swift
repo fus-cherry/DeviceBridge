@@ -306,7 +306,8 @@ struct IOSRunnerWorkspaceChecks {
         for failure in [IOSRunnerSourceConfigurationError.signingTeamRequired,
                         .bundleMissing, .invalidManifest, .sourcesMissing, .unsafePath] {
             let model = WorkspaceViewModel(arguments: [], runner: WorkspacePhoneInventory(),
-                iosScreenshotRunnerFactory: { _ in throw failure })
+                iosScreenshotRunnerFactory: { _ in throw failure },
+                iosClipboardHostFactory: { _ in throw failure })
             defer { model.stop() }
             model.start()
             try await wait { !model.isRefreshing && model.devices.count == 1 }
@@ -315,7 +316,7 @@ struct IOSRunnerWorkspaceChecks {
             model.requestScreenshotCapture()
             try await wait { !model.isCapturingScreenshot }
             let expected = failure == .signingTeamRequired
-                ? "Set your existing Apple development Team ID in Settings, then retry iOS tools."
+                ? IOSRunnerOwnerConfiguration.signingRecoveryMessage
                 : "The bundled iOS runner sources are missing or invalid. Rebuild the Debug app and retry."
             try require(model.screenshotReadiness == .actionRequired(expected)
                 && model.clipboardReadinessText == "Available on demand",
@@ -326,6 +327,17 @@ struct IOSRunnerWorkspaceChecks {
                 "runner configuration failure must preserve independent file readiness")
             if case .failed = model.iosRunnerPreparation?.state { }
             else { throw Failure.failed("configuration failure must terminate the visible progress") }
+            model.requestClipboardRead()
+            try await wait { !model.isClipboardBusy }
+            let clipboardExpected = failure == .signingTeamRequired
+                ? IOSRunnerOwnerConfiguration.signingRecoveryMessage
+                : "The bundled iOS clipboard Host is missing or invalid. Rebuild the app and retry."
+            try require(model.clipboardReadiness == .actionRequired(clipboardExpected),
+                "clipboard configuration failure must describe real local recovery, not a removed Settings field")
+            try require(model.screenshotReadiness == .actionRequired(expected) && model.isFileTransferReady,
+                "clipboard configuration failure must preserve screenshot feedback and independent files")
+            try require(!clipboardExpected.contains("Settings") && !expected.contains("Settings"),
+                "fixed owner signing recovery must not ask for an editable Team preference")
         }
         print("PASS: unsupported Wi-Fi rejects USB runner launch/content; five first-use configuration failures preserve recovery advice and independent files")
     }

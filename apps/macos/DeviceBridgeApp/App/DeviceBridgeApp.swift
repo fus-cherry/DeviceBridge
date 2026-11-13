@@ -19,7 +19,6 @@ struct DeviceBridgeApp: App {
     @StateObject private var hdcManager = HDCManagerViewModel()
     @AppStorage("interfaceLanguage") private var languageValue = "system"
     @AppStorage("settingsTab") private var settingsTab = "general"
-    @AppStorage("iosSigningTeamID") private var iosSigningTeamID = ""
 
     init() {
         let arguments = ProcessInfo.processInfo.arguments
@@ -61,13 +60,13 @@ struct DeviceBridgeApp: App {
             let language = InterfaceLanguage(storedValue: languageValue).resolved()
             TabView(selection: $settingsTab) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(language.text("Apple development Team ID")).font(.headline)
-                    TextField(language.text("Apple development Team ID"), text: $iosSigningTeamID)
-                        .textFieldStyle(.roundedBorder)
-                    Text(language.text("Uses your existing local signing identity and profiles. No certificates are created. Select the iPhone again after changing this setting."))
+                    Text(language.text("iOS preparation")).font(.headline)
+                        .accessibilityIdentifier("general-ios-preparation-title")
+                    Text(language.text("iOS helpers are built on this Mac. A matching Apple development signing identity and provisioning profile must already be installed. DeviceBridge does not create certificates or profiles."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("general-ios-preparation-note")
                     Text(language.text("The USB screenshot runner renews every 10 seconds and runs for up to one hour. Select the device again after the session ends."))
                         .font(.caption)
                         .foregroundStyle(.secondary)

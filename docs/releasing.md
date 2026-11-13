@@ -33,7 +33,7 @@ git push origin v0.1.2
 4. [build-release.sh](../scripts/build-release.sh) 构建 Release App，校验 App 版本、arm64 架构、代码签名、内嵌 APK 哈希、iOS runner 源码依赖及资源的多用户读取权限，生成并校验 DMG。
 5. 上传 DMG、`SHA256SUMS.txt`、`build-info.json` 和发布说明。版本标签构建在独立发布任务中先创建草稿、上传全部附件，再公开为仓库成员可见的预发布版本。
 
-工作流默认只读仓库，仅发布任务拥有 `contents: write`。第三方 Actions 固定到提交 SHA。构建不会运行桌面 XCTest，也不会接触真实手机；自动检查不代表真机全功能验收完成。
+工作流默认只读仓库，仅发布任务拥有 `contents: write`。第三方 Actions 固定到提交 SHA。候选构建会在隔离的 GitHub macOS runner 上运行夹具桌面 XCTest，不接触使用者电脑或真实手机；自动检查不代表真机全功能验收完成。
 
 Runner 和工具链资料：[GitHub 托管 runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)、[macOS 26 ARM64 镜像](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md)。更新工具链时应同时更新工作流与此文档，并重新构建验证。
 
@@ -43,9 +43,9 @@ Runner 和工具链资料：[GitHub 托管 runner](https://docs.github.com/en/ac
 
 默认包为 **ad-hoc 签名的内部测试版本，未经 Apple 公证**，不需要将个人 Apple 证书上传到 GitHub。首次打开可能被 Gatekeeper 拦截；按首页的安装说明，在系统设置 → 隐私与安全性中允许打开。
 
-需要 Developer ID 签名和 Apple 公证时，按[开发指南](development.md#手动-developer-id-归档)准备正式分发。当前自动流水线不声称支持自动公证。
+需要 Developer ID 签名和 Apple 公证时，可按[开发指南](development.md#手动-developer-id-归档)手动准备，或使用 0.1.8 候选的[隔离签名任务](apple-signing.md)。只有 Apple 接受、staple 和 Gatekeeper 校验全部通过的产物才可称已公证，Secrets 已配置不等于成功。
 
-iOS runner 源码内嵌在 App 中，使用者在自己的 Mac 上选择签名团队后构建；CI 不分发可直接安装到任意 iPhone 的预签名 runner。
+iOS runner 源码内嵌在 App 中；当前私有构建使用所有者指定的 `5F6294RLX4`，不显示团队编辑字段、不读取旧团队偏好。使用者仍须在自己的 Mac 上持有匹配的开发身份和描述文件后构建。此设置不改写 Mac Developer ID Secrets；CI 不分发可直接安装到任意 iPhone 的预签名 runner。
 
 ### Android
 

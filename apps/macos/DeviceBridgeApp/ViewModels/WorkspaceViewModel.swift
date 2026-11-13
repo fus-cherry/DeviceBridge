@@ -5,6 +5,28 @@ import Combine
 import Foundation
 import Security
 
+/// App-owned iOS development signing configuration, not a certificate or a user preference.
+/// Core remains reusable with other teams; both app helper paths use this one owner team.
+enum IOSRunnerOwnerConfiguration {
+    static let developmentTeamIdentifier = "5F6294RLX4"
+    static let signingRecoveryMessage = "This iOS helper requires a matching Apple Development signing identity and provisioning profile in Xcode on this Mac. DeviceBridge does not create certificates or profiles. Install the required signing assets, then retry."
+
+    static func manager(helperResourcesURL: URL, runner: any HostCommandRunning,
+                        launcher: any IOSRunnerChannelLaunching,
+                        buildWorkspace: IOSRunnerBuildWorkspace,
+                        buildRootDirectoryURL: URL = FileManager.default.temporaryDirectory
+                            .appendingPathComponent("DeviceBridgeRunnerBuilds", isDirectory: true)) throws -> IOSRunnerManager {
+        // Deliberately do not read iosSigningTeamID from UserDefaults. Old persisted
+        // preferences must not select a different team or reuse that team's build inputs.
+        let configuration = try IOSRunnerSourceConfiguration(helperResourcesURL: helperResourcesURL,
+            signingTeamID: developmentTeamIdentifier)
+        return IOSRunnerManager(xcodebuildURL: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
+            projectURL: configuration.projectURL, scheme: configuration.scheme,
+            signingTeamID: configuration.signingTeamID, runner: runner, launcher: launcher,
+            buildRootDirectoryURL: buildRootDirectoryURL, buildWorkspace: buildWorkspace)
+    }
+}
+
 enum CapabilityReadiness: Equatable {
     case idle
     case availableOnDemand(String)
@@ -2102,12 +2124,8 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                 guard let resources = Bundle.main.resourceURL else {
                     throw IOSRunnerSourceConfigurationError.bundleMissing
                 }
-                let configuration = try IOSRunnerSourceConfiguration(
-                    helperResourcesURL: resources.appendingPathComponent("Helpers"),
-                    signingTeamID: UserDefaults.standard.string(forKey: "iosSigningTeamID"))
-                manager = IOSRunnerManager(xcodebuildURL: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
-                    projectURL: configuration.projectURL, scheme: configuration.scheme,
-                    signingTeamID: configuration.signingTeamID, runner: runner,
+                manager = try IOSRunnerOwnerConfiguration.manager(
+                    helperResourcesURL: resources.appendingPathComponent("Helpers"), runner: runner,
                     launcher: IOSRunnerLauncher(xcrunURL: xcrunURL,
                         channels: IOSRunnerChannelFactory(xcrunURL: xcrunURL),
                         maximumRunnerLifetime: .seconds(3_600)),
@@ -2170,7 +2188,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         } catch {
             guard !Task.isCancelled, selectionRevision == revision else { return }
             let message = (error as? IOSRunnerSourceConfigurationError) == .signingTeamRequired
-                ? "Set your existing Apple development Team ID in Settings, then retry iOS tools."
+                ? IOSRunnerOwnerConfiguration.signingRecoveryMessage
                 : "The bundled iOS runner sources are missing or invalid. Rebuild the Debug app and retry."
             screenshotReadiness = .actionRequired(message)
             let failedStage = iosRunnerPreparation?.stage ?? .building
@@ -2195,12 +2213,8 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                 guard let resources = Bundle.main.resourceURL else {
                     throw IOSRunnerSourceConfigurationError.bundleMissing
                 }
-                let configuration = try IOSRunnerSourceConfiguration(
-                    helperResourcesURL: resources.appendingPathComponent("Helpers"),
-                    signingTeamID: UserDefaults.standard.string(forKey: "iosSigningTeamID"))
-                manager = IOSRunnerManager(xcodebuildURL: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
-                    projectURL: configuration.projectURL, scheme: configuration.scheme,
-                    signingTeamID: configuration.signingTeamID, runner: runner,
+                manager = try IOSRunnerOwnerConfiguration.manager(
+                    helperResourcesURL: resources.appendingPathComponent("Helpers"), runner: runner,
                     launcher: IOSClipboardHostLauncher(xcrunURL: xcrunURL,
                         channels: IOSClipboardHostChannelFactory(xcrunURL: xcrunURL),
                         maximumLifetime: .seconds(3_600)),
@@ -2248,7 +2262,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         } catch {
             guard !Task.isCancelled, selectionRevision == revision else { return }
             let message = (error as? IOSRunnerSourceConfigurationError) == .signingTeamRequired
-                ? "Set your existing Apple development Team ID in Settings, then retry clipboard access."
+                ? IOSRunnerOwnerConfiguration.signingRecoveryMessage
                 : "The bundled iOS clipboard Host is missing or invalid. Rebuild the app and retry."
             clipboardReadiness = .actionRequired(message)
             let failedStage = iosClipboardPreparation?.stage ?? .building

@@ -7,6 +7,44 @@ final class HDCManagerUITests: XCTestCase {
     override func setUp() { continueAfterFailure = false }
 
     @MainActor
+    func testGeneralSettingsHideSigningTeamsAndKeepHDCNavigationInBothLanguages() throws {
+        for language in ["en", "zh-Hans"] {
+            let chinese = language == "zh-Hans"
+            let root = try makeFixture()
+            // Seed only this test's isolated preference domain, never the user's
+            // standard defaults or local signing identities.
+            let app = launch(root: root, language: language, legacySigningTeam: "9Y3KFUUCJG")
+            app.typeKey(",", modifierFlags: .command)
+            let settings = app.windows["com_apple_SwiftUI_Settings_window"]
+            XCTAssertTrue(settings.waitForExistence(timeout: 5), app.debugDescription)
+            let general = settings.buttons[chinese ? "通用" : "General"]
+            XCTAssertTrue(general.waitForExistence(timeout: 5), settings.debugDescription)
+            general.click()
+            assertLabel(settings.staticTexts["general-ios-preparation-title"], equals: chinese ? "iOS 准备" : "iOS preparation")
+            assertLabel(settings.staticTexts["general-ios-preparation-note"], equals: chinese
+                ? "iOS 辅助工具在本机上构建。请预先安装匹配的 Apple 开发签名身份和设备描述文件。DeviceBridge 不会创建证书或描述文件。"
+                : "iOS helpers are built on this Mac. A matching Apple development signing identity and provisioning profile must already be installed. DeviceBridge does not create certificates or profiles.")
+            XCTAssertEqual(settings.textFields.count, 0, "General settings must not expose an editable signing-team field")
+            let displayed = settings.staticTexts.allElementsBoundByIndex.map { displayedText($0) }.joined(separator: "\n")
+            for forbidden in ["9Y3KFUUCJG", "5F6294RLX4", "Team ID", "团队 ID", "团队ID"] {
+                XCTAssertFalse(displayed.localizedCaseInsensitiveContains(forbidden), "General settings must not display signing-team values or labels")
+            }
+            record(app, name: "general-ios-preparation-no-team-\(language)")
+            settings.buttons["_XCUI:CloseWindow"].click()
+            let entry = ensureWorkspaceSidebar(app).buttons["hdc-open-settings"]
+            XCTAssertTrue(entry.waitForExistence(timeout: 5), app.debugDescription)
+            XCTAssertTrue(entry.isHittable)
+            XCTAssertGreaterThan(entry.frame.width, 200)
+            XCTAssertEqual(entry.label, chinese ? "HDC 工具管理…" : "Manage HDC tools…")
+            entry.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5)).click()
+            XCTAssertTrue(app.buttons["hdc-inspect"].waitForExistence(timeout: 5),
+                          "Removing signing settings must preserve direct HDC-tool navigation")
+            XCTAssertEqual(app.buttons["hdc-inspect"].label, chinese ? "检查路径" : "Inspect path")
+            app.terminate()
+        }
+    }
+
+    @MainActor
     func testHDCPathInspectionImportVersionConsentAndPersistentSelection() throws {
         let root = try makeFixture()
         let app = launch(root: root)
@@ -233,9 +271,14 @@ final class HDCManagerUITests: XCTestCase {
     }
 
     @MainActor
-    private func launch(root: URL, language: String = "en") -> XCUIApplication {
+    private func launch(root: URL, language: String = "en", legacySigningTeam: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         let suite = "dev.debugutility.hdc-ui.\(UUID().uuidString)"
+        if let legacySigningTeam {
+            let defaults = UserDefaults(suiteName: suite)!
+            defaults.set(legacySigningTeam, forKey: "iosSigningTeamID")
+            defaults.synchronize()
+        }
         app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-hdc-manager", "--hdc-fixture-root", root.path,
                                "--language-test-suite", suite, "--fixture-language", language]
         app.launch()

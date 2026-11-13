@@ -9,6 +9,7 @@ struct IOSPreparationView: View {
     let canReconnect: Bool
     let cancel: () -> Void
     let reconnect: () -> Void
+    let openPreparationSettings: () -> Void
     @Environment(\.interfaceLanguage) private var language
 
     var body: some View {
@@ -52,7 +53,7 @@ struct IOSPreparationView: View {
                         Button(language.text("Cancel preparation"), action: cancel)
                             .disabled(!canCancel).accessibilityIdentifier("ios-preparation-cancel")
                     } else {
-                        SettingsLink { Text(language.text("Signing settings…")) }
+                        Button(language.text("iOS preparation…"), action: openPreparationSettings)
                             .accessibilityIdentifier("ios-preparation-settings")
                         Spacer()
                         Button(language.text("Retry iOS tools"), action: reconnect)
@@ -476,7 +477,8 @@ struct WorkspaceView: View {
                         canCancel: model.canStopIOSPreparation(preparation.owner),
                         canReconnect: model.canReconnectIOSPreparation(preparation.owner),
                         cancel: { model.stopIOSPreparation(preparation.owner) },
-                        reconnect: { model.reconnectIOSPreparation(preparation.owner) })
+                        reconnect: { model.reconnectIOSPreparation(preparation.owner) },
+                        openPreparationSettings: { settingsTab = "general"; openSettings() })
                 }
 
                 // A GroupBox around these module controls triggers the Computer Use AX-tree trap.

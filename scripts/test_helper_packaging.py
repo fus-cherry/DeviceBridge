@@ -77,6 +77,21 @@ class HelperPackagingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
+    def test_current_runner_is_native_and_legacy_project_has_no_foreign_team(self):
+        bundler = (ROOT / RESOURCES / "package-helpers.sh").read_text()
+        manifest = json.loads((ROOT / RESOURCES / "manifest.json").read_text())
+        self.assertIn('ios_runner="${source_root}/helpers/ios"', bundler)
+        self.assertIn("--include='/helpers/ios/DeviceBridgeRunner.xcodeproj/***'", bundler)
+        self.assertNotIn("apps/device_companion", bundler)
+        self.assertEqual(manifest["ios"]["project"], "helpers/ios/DeviceBridgeRunner.xcodeproj")
+        legacy = (ROOT / "apps/device_companion/ios/Runner.xcodeproj/project.pbxproj").read_text()
+        self.assertNotIn("9Y3KFUUCJG", legacy)
+        self.assertEqual(legacy.count('DEVELOPMENT_TEAM = "";'), 3)
+        native = (ROOT / "helpers/ios/DeviceBridgeRunner.xcodeproj/project.pbxproj").read_text()
+        self.assertNotIn("9Y3KFUUCJG", native)
+        self.assertNotIn("5F6294RLX4", native,
+                         "The generic source project must receive the app's owner team at build time")
+
     def test_packaged_project_resolves_local_packages_after_source_is_moved(self):
         self.package()
         self.root.rename(self.root.with_name("unavailable original source"))
