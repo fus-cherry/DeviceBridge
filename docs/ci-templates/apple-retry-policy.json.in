@@ -1,0 +1,15 @@
+{
+  "source_sha": "__REVIEWED_SOURCE_SHA__",
+  "source_run": "__REVIEWED_SOURCE_RUN__",
+  "version": "0.1.8",
+  "build": "__REVIEWED_BUILD_NUMBER__",
+  "prior_signing_state": "__REVIEWED_NO_SUBMISSION_STATE__",
+  "source_run_attempt": "__REVIEWED_SOURCE_RUN_ATTEMPT__",
+  "source_build_job_id": "__REVIEWED_SOURCE_BUILD_JOB_ID__",
+  "first_attempt": "__REVIEWED_FIRST_ATTEMPT_EVIDENCE_OR_NULL__",
+  "prior_apple_job_id": "__REVIEWED_PRIOR_APPLE_JOB_ID__",
+  "package_artifact_id": "__REVIEWED_PACKAGE_ARTIFACT_ID__",
+  "package_digest": "__REVIEWED_PACKAGE_ZIP_SHA256__",
+  "outcome_artifact_id": "__REVIEWED_OUTCOME_ARTIFACT_ID__",
+  "outcome_digest": "__REVIEWED_OUTCOME_ZIP_SHA256__"
+}

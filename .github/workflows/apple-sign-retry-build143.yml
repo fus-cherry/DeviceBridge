@@ -1,0 +1,78 @@
+name: Sign verified approved 0.1.8 build once
+
+on:
+  push:
+    branches: [cloud/0.1.8-apple-retry-build143]
+    paths: [.github/workflows/apple-sign-retry-build143.yml]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: apple-retry-build143-once
+  cancel-in-progress: false
+
+jobs:
+  sign-verified-build143:
+    if: >-
+      github.repository == 'fus-cherry/DeviceBridge' &&
+      github.actor == 'fus-cherry' &&
+      github.ref == 'refs/heads/cloud/0.1.8-apple-retry-build143' &&
+      github.event_name == 'push' && github.run_attempt == 1
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Check out reviewed retry controls without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: retry-controls
+      - name: Check out the immutable source of approved 0.1.8 build without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 44f515fcad46d806c16e6fccff9ce82e8503a4f0
+          persist-credentials: false
+          path: approved-source
+      - name: Verify source and prepare the fixed artifact only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$(git -C approved-source rev-parse HEAD)" == 44f515fcad46d806c16e6fccff9ce82e8503a4f0 ]]
+          python3 retry-controls/scripts/verify-apple-retry-input.py \
+            --policy retry-controls/docs/ci-templates/apple-retry-policy.json \
+            --output "$RUNNER_TEMP/apple-input"
+      - name: Sign original approved 0.1.8 build with the original reviewed signer
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          python3 approved-source/scripts/sign-apple-release.py \
+            --input "$RUNNER_TEMP/apple-input" \
+            --output "$RUNNER_TEMP/apple-signed" \
+            --version 0.1.8 --build 143 \
+            --commit 44f515fcad46d806c16e6fccff9ce82e8503a4f0 \
+            --summary "$RUNNER_TEMP/apple-signing-summary.json"
+      - name: Preserve non-secret outcome including notarization submission IDs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: DeviceBridge-build143-apple-retry-outcome-${{ github.run_id }}
+          path: ${{ runner.temp }}/apple-signing-summary.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload only fully accepted and verified Apple DMG
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: DeviceBridge-0.1.8-build143-Apple-notarized-retry
+          path: ${{ runner.temp }}/apple-signed/
+          if-no-files-found: error
+          retention-days: 14

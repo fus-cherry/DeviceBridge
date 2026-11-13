@@ -1,0 +1,15 @@
+{
+  "source_sha": "44f515fcad46d806c16e6fccff9ce82e8503a4f0",
+  "source_run": 43400209317,
+  "source_run_attempt": 1,
+  "version": "0.1.8",
+  "build": "143",
+  "source_build_job_id": 131803244551,
+  "first_attempt": null,
+  "prior_apple_job_id": 131817987287,
+  "prior_signing_state": "pre-apple-certificate-import-failure",
+  "package_artifact_id": 14026812304,
+  "package_digest": "a1901d792fa5e82711736960fbbc32cd6a109398dd7f4674d4ec7a447bddefa7",
+  "outcome_artifact_id": 14026179737,
+  "outcome_digest": "de3061c8c6777caf8000a940fab5d782783385e291f4d1d5e31326879bf4cb7a"
+}
