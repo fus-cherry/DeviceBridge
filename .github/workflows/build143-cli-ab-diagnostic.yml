@@ -1,0 +1,51 @@
+name: Compare Build143 CLI signing keychain search scope
+on:
+  push:
+    branches: [cloud/0.1.8-build143-cli-ab-diagnostic]
+    paths: [.github/workflows/build143-cli-ab-diagnostic.yml]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: devicebridge-build143-cli-ab-diagnostic-once
+  cancel-in-progress: false
+jobs:
+  cli-only:
+    if: >-
+      github.repository == 'fus-cherry/DeviceBridge' &&
+      github.actor == 'fus-cherry' &&
+      github.ref == 'refs/heads/cloud/0.1.8-build143-cli-ab-diagnostic' &&
+      github.event_name == 'push' && github.run_attempt == 1
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Check out reviewed diagnostics without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: diagnostic-controls
+      - name: Check out fixed original Build143 source without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 44f515fcad46d806c16e6fccff9ce82e8503a4f0
+          persist-credentials: false
+          path: approved-source
+      - name: Test diagnostic controls without Apple credentials
+        run: |
+          set -euo pipefail
+          [[ "$(git -C approved-source rev-parse HEAD)" == 44f515fcad46d806c16e6fccff9ce82e8503a4f0 ]]
+          python3 -I -B diagnostic-controls/scripts/test_build143_cli_diagnostic.py
+          python3 -I -B diagnostic-controls/scripts/test_apple_codesign_classifier.py
+      - name: Verify fixed package and previous no-submission failure without Apple credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I -B diagnostic-controls/scripts/diagnose-build143-cli.py preflight --input "$RUNNER_TEMP/cli-diagnostic-input"
+      - name: Diagnose only temporary CLI signing with timestamp; no notarization submission
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: python3 -I -B diagnostic-controls/scripts/diagnose-build143-cli.py diagnose --input "$RUNNER_TEMP/cli-diagnostic-input" --source approved-source
