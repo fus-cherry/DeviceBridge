@@ -42,9 +42,27 @@ final class HDCManagerUITests: XCTestCase {
         XCTAssertFalse(app.buttons["hdc-activate"].isEnabled)
         assertLabel(app.staticTexts["hdc-inspection-issue-0"], equals: "Required library was not found beside HDC: libusb_shared.dylib")
 
+        let pathBeforePickerCancel = try XCTUnwrap(path.value as? String)
+        let configurationURL = root.appendingPathComponent("managed/configuration.json")
+        let configurationBeforePickerCancel = try? Data(contentsOf: configurationURL)
+        app.buttons["hdc-choose-path"].click()
+        let cancelledPicker = nativePicker(app)
+        app.typeKey(.escape, modifierFlags: [])
+        waitForNativePickerDismissal(cancelledPicker)
+        XCTAssertEqual(path.value as? String, pathBeforePickerCancel,
+                       "Escaping the native picker must preserve the prior path")
+        XCTAssertEqual(try? Data(contentsOf: configurationURL), configurationBeforePickerCancel,
+                       "Cancelling the picker must not enable or persist a different tool")
+        XCTAssertFalse(app.buttons["hdc-activate"].isEnabled)
+        assertLabel(app.staticTexts["hdc-inspection-status"], equals: "Tool needs attention")
+
         app.buttons["hdc-choose-path"].click()
         chooseDirectory(root.appendingPathComponent("sdk"), prompt: "Choose", app: app)
         assertLabel(app.staticTexts["hdc-inspection-status"], equals: "Static checks passed")
+        let chosen = try XCTUnwrap(path.value as? String)
+        XCTAssertEqual(URL(fileURLWithPath: chosen).resolvingSymlinksInPath(),
+                       root.appendingPathComponent("sdk").resolvingSymlinksInPath(),
+                       "The real native panel must return the requested SDK directory")
         app.buttons["hdc-import-directory"].click()
         chooseDirectory(root.appendingPathComponent("sdk"), prompt: "Import", app: app)
         let importedPath = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
@@ -276,43 +294,38 @@ final class HDCManagerUITests: XCTestCase {
     }
 
     @MainActor
-    private func chooseDirectory(_ directory: URL, prompt: String, app: XCUIApplication) {
-        // NSOpenPanel is a top-level AXDialog, not an AXWindow. Its native
-        // OKButton is distinct from the Touch Bar's title-only mirror.
-        let panel = app.dialogs["open-panel"]
+    private func nativePicker(_ app: XCUIApplication) -> XCUIElement {
+        // Native panels can expose either AXSheet or AXDialog depending on
+        // macOS hosting. The public panel identifier is stable in both forms.
+        let panel = app.descendants(matching: .any).matching(identifier: "open-panel").firstMatch
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
+        return panel
+    }
+
+    @MainActor
+    private func waitForNativePickerDismissal(_ panel: XCUIElement) {
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !panel.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 10), .completed,
+                       "The real native picker must close before the next operation")
+    }
+
+    @MainActor
+    private func chooseDirectory(_ directory: URL, prompt: String, app: XCUIApplication) {
+        let panel = nativePicker(app)
         app.typeKey("g", modifierFlags: [.command, .shift])
         app.typeKey("a", modifierFlags: .command)
         app.typeText(directory.path)
+        // First Return commits Go to Folder. The second invokes NSOpenPanel's
+        // standard default Choose/Import action using real keyboard input.
+        // Avoid querying XPC-hosted button frames/flags after navigation: macOS
+        // reports stale AXDisabled ancestors and can stall those remote snapshots.
         app.typeKey(.return, modifierFlags: [])
-        let choose = panel.buttons["OKButton"]
-        XCTAssertEqual(panel.buttons.matching(identifier: "OKButton").count, 1,
-                       "Click exactly the real panel button, not a Touch Bar mirror")
-        let location = panel.popUpButtons["where popup"]
-        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            guard choose.exists, panel.buttons[prompt].exists, location.exists,
-                  location.value as? String == directory.lastPathComponent else { return false }
-            let buttonFrame = choose.frame
-            return buttonFrame.width > 20 && buttonFrame.height > 10 && panel.frame.contains(buttonFrame)
-        }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed, panel.debugDescription)
-        let screenshot = XCUIScreen.main.screenshot()
-        let screenBounds = CGRect(origin: .zero, size: screenshot.image.size)
-        XCTAssertTrue(screenBounds.contains(choose.frame), "Native panel action must be fully on screen")
-        let evidence = XCTAttachment(screenshot: screenshot)
+        let evidence = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         evidence.name = "hdc-native-panel-before-\(prompt.lowercased())"
         evidence.lifetime = .keepAlways
         add(evidence)
-        // The XPC-hosted panel reports its app/dialog ancestors as AXDisabled,
-        // even while this visible blue button accepts input. Click its measured
-        // on-screen center, then require real dismissal and the selected result.
-        let frame = choose.frame
-        let origin = panel.frame.origin
-        panel.coordinate(withNormalizedOffset: .zero)
-            .withOffset(CGVector(dx: frame.midX - origin.x, dy: frame.midY - origin.y)).click()
-        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !panel.exists }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed,
-                       "Choosing or importing the directory must dismiss the real NSOpenPanel dialog")
+        app.typeKey(.return, modifierFlags: [])
+        waitForNativePickerDismissal(panel)
         XCTAssertTrue(app.buttons["hdc-inspect"].waitForExistence(timeout: 3))
     }
 

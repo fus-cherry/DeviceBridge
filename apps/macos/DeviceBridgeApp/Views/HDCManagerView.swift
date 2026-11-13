@@ -44,6 +44,8 @@ final class HDCManagerViewModel: ObservableObject {
     private var versionTask: Task<Void, Never>?
     private var inspectionTask: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
+    private var chooserPanel: NSOpenPanel?
+    private var chooserRevision = UUID()
     private var inspectionRevision = UUID()
     private var benchmarkRevision = UUID()
 
@@ -111,15 +113,28 @@ final class HDCManagerViewModel: ObservableObject {
     }
 
     func choosePath(importing: Bool, language: InterfaceLanguage) {
+        guard chooserPanel == nil else { return }
+        guard let window = NSApp.keyWindow else { fail("Open HDC settings before choosing a toolchain."); return }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = !importing
         panel.allowsMultipleSelection = false
         if let fixtureRoot { panel.directoryURL = fixtureRoot }
         panel.prompt = importing ? hdcText("Import", language: language) : hdcText("Choose", language: language)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        if importing { importDirectory(url) }
-        else { pathText = url.path; inspectPath() }
+        chooserPanel = panel
+        let revision = UUID()
+        chooserRevision = revision
+        // A normal asynchronous settings sheet avoids a nested, app-wide modal
+        // run loop while retaining the native file chooser and user selection.
+        panel.beginSheetModal(for: window) { [weak self] response in
+            Task { @MainActor in
+                guard let self, self.chooserRevision == revision else { return }
+                self.chooserPanel = nil
+                guard response == .OK, let url = panel.url else { return }
+                if importing { self.importDirectory(url) }
+                else { self.pathText = url.path; self.inspectPath() }
+            }
+        }
     }
 
     func importDirectory(_ url: URL) {
@@ -342,7 +357,12 @@ final class HDCManagerViewModel: ObservableObject {
         } else { fail("The download page could not be opened.") }
     }
 
-    func suspend() { cancelBenchmark(); cancelVersion(); cancelInspection() }
+    func suspend() {
+        chooserRevision = UUID()
+        chooserPanel?.cancel(nil)
+        chooserPanel = nil
+        cancelBenchmark(); cancelVersion(); cancelInspection()
+    }
 
     func cancelInspection() {
         inspectionRevision = UUID()
@@ -642,6 +662,7 @@ private func hdcText(_ key: String, language: InterfaceLanguage) -> String {
 
 private let hdcChinese: [String: String] = [
     "Import": "导入", "Choose": "选择",
+    "Open HDC settings before choosing a toolchain.": "请先打开 HDC 设置，再选择工具链。",
     "Import destination must not be inside the selected toolchain directory.": "导入目标不能位于所选工具链目录内。",
     "Enable HDC and allow automatic discovery?": "启用 HDC 并允许自动发现设备？",
     "Enable and allow discovery": "启用并允许发现设备",
