@@ -188,7 +188,7 @@ public enum HDCDownloadProbeFailure: Error, Equatable, Sendable {
         case .nonHTTPResponse: "The source did not return an HTTP response."
         case .insecureRedirect: "The source redirected to a non-HTTPS or credential-bearing URL."
         case .tooManyRedirects: "The source exceeded the redirect limit."
-        case .rangeUnsupported: "The source does not support byte-range sampling; no full download was started."
+        case .rangeUnsupported: "The source does not support byte-range sampling; its response body was not accepted."
         case .invalidContentRange: "The source returned an invalid or oversized byte range."
         case .unexpectedContentEncoding: "The source did not return an uncompressed byte range."
         case .authenticationRequired: "This source requires authentication; open it in your browser."
@@ -381,20 +381,40 @@ public struct HDCDownloadSourceBenchmarker: Sendable {
     }
 }
 
+// Internal, read-only audit events allow deterministic tests of the actual response
+// disposition and accepted byte counters. Production never installs an observer.
+enum HDCDownloadProbeEvent: Equatable, Sendable {
+    enum Disposition: Equatable, Sendable { case allow, cancel }
+    case responseDisposition(Disposition)
+    case finished(bytesAccepted: Int, failure: HDCDownloadProbeFailure?)
+}
+
 /// Uses streaming URLSession delegate callbacks rather than data(for:), rejects a
-/// 200 before accepting a body, and retains only counters. The copied configuration
+/// 200 before accepting a body, and retains only counters. The byte ceiling applies
+/// to accepted sample bytes, not bytes a server has already emitted or URLSession/
+/// the network stack may have prefetched before delivering the response callback.
+/// Such in-flight bytes are discarded, never retained as a package. The copied configuration
 /// is immutable here; each probe owns its session, deadline and cancellation state.
 public final class URLSessionHDCDownloadProbeTransport: HDCDownloadProbeTransport, @unchecked Sendable {
     private let configuration: URLSessionConfiguration
+    private let observe: (@Sendable (HDCDownloadProbeEvent) -> Void)?
 
     public init(configuration: URLSessionConfiguration = .ephemeral) {
         self.configuration = configuration.copy() as! URLSessionConfiguration
+        self.observe = nil
+    }
+
+    // The observer has no ability to change dispositions, deadlines, or limits.
+    init(configuration: URLSessionConfiguration,
+         observe: @escaping @Sendable (HDCDownloadProbeEvent) -> Void) {
+        self.configuration = configuration.copy() as! URLSessionConfiguration
+        self.observe = observe
     }
 
     public func probe(_ request: HDCDownloadProbeRequest) async throws -> HDCDownloadProbeSample {
         guard request.isValid else { throw HDCDownloadProbeFailure.invalidRequest }
         let operation = HDCBoundedProbeOperation(request: request,
-            configuration: configuration.copy() as! URLSessionConfiguration)
+            configuration: configuration.copy() as! URLSessionConfiguration, observe: observe)
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
@@ -406,9 +426,11 @@ public final class URLSessionHDCDownloadProbeTransport: HDCDownloadProbeTranspor
     }
 }
 
-private final class HDCBoundedProbeOperation: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+// Internal for deterministic delegate-order tests; not part of the package API.
+final class HDCBoundedProbeOperation: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let request: HDCDownloadProbeRequest
     private let configuration: URLSessionConfiguration
+    private let observe: (@Sendable (HDCDownloadProbeEvent) -> Void)?
     private let lock = NSLock()
     private var continuation: CheckedContinuation<HDCDownloadProbeSample, any Error>?
     private var completed: Result<HDCDownloadProbeSample, any Error>?
@@ -422,9 +444,11 @@ private final class HDCBoundedProbeOperation: NSObject, URLSessionDataDelegate, 
     private var redirects = 0
     private var finalURL: URL
 
-    init(request: HDCDownloadProbeRequest, configuration: URLSessionConfiguration) {
+    init(request: HDCDownloadProbeRequest, configuration: URLSessionConfiguration,
+         observe: (@Sendable (HDCDownloadProbeEvent) -> Void)? = nil) {
         self.request = request
         self.configuration = configuration
+        self.observe = observe
         self.finalURL = request.url
     }
 
@@ -465,6 +489,13 @@ private final class HDCBoundedProbeOperation: NSObject, URLSessionDataDelegate, 
 
     func cancel() { finish(.failure(HDCDownloadProbeFailure.cancelled)) }
 
+    // Read-only test diagnostic, including after late callbacks on a finished probe.
+    var acceptedByteCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return receivedBytes
+    }
+
     private func sampleRequest(_ url: URL) -> URLRequest {
         var result = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
                                 timeoutInterval: request.timeout)
@@ -483,6 +514,7 @@ private final class HDCBoundedProbeOperation: NSObject, URLSessionDataDelegate, 
         let task = self.task
         let session = self.session
         let deadline = self.deadline
+        let bytesAccepted = receivedBytes
         self.continuation = nil
         self.task = nil
         self.session = nil
@@ -491,6 +523,12 @@ private final class HDCBoundedProbeOperation: NSObject, URLSessionDataDelegate, 
         deadline?.cancel()
         task?.cancel()
         session?.invalidateAndCancel()
+        let failure: HDCDownloadProbeFailure?
+        switch result {
+        case .success: failure = nil
+        case .failure(let error): failure = (error as? HDCDownloadProbeFailure) ?? .transportFailed
+        }
+        observe?(.finished(bytesAccepted: bytesAccepted, failure: failure))
         continuation?.resume(with: result)
     }
 
@@ -536,6 +574,7 @@ private final class HDCBoundedProbeOperation: NSObject, URLSessionDataDelegate, 
         let validation = validate(response)
         guard case .success(let expected) = validation else {
             completionHandler(.cancel)
+            observe?(.responseDisposition(.cancel))
             if case .failure(let error) = validation { finish(.failure(error)) }
             return
         }
@@ -548,6 +587,7 @@ private final class HDCBoundedProbeOperation: NSObject, URLSessionDataDelegate, 
         }
         lock.unlock()
         completionHandler(active ? .allow : .cancel)
+        observe?(.responseDisposition(active ? .allow : .cancel))
     }
 
     private func validate(_ response: URLResponse) -> Result<Int, HDCDownloadProbeFailure> {

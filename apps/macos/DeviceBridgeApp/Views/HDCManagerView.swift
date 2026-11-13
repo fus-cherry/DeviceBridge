@@ -668,6 +668,7 @@ private let hdcChinese: [String: String] = [
     "Open the official download page in your browser.": "请在浏览器中打开官方下载页面。",
     "Only the same HDC version and architecture can be compared.": "仅相同 HDC 版本和架构可以比较。",
     "The source exceeded the sample time limit.": "来源超过样本时间限制。", "The speed test was cancelled.": "已取消测速。",
+    "The source does not support byte-range sampling; its response body was not accepted.": "来源不支持字节范围采样，未接受其响应正文。",
     "This source requires authentication; open it in your browser.": "来源需要身份验证，请在浏览器中打开。",
     "HDC tool": "HDC 工具", "Download sources": "下载来源", "HDC executable or SDK directory": "HDC 可执行文件或 SDK 目录",
     "Use a trusted HarmonyOS SDK toolchain. Selecting or inspecting a path never executes it.": "请选择可信的鸿蒙 SDK 工具链。选择或检查路径不会执行工具。",

@@ -92,9 +92,8 @@ jobs:
             helpers/android/app/build/outputs/apk/release/app-release.apk
       - name: Exercise sidebar and HDC manager controls on isolated macOS runner
         id: native_ui
-        # Preserve all test results in one run. A separate explicit gate below
-        # still forbids packaging/signing if this UI step fails or is cancelled.
-        continue-on-error: true
+        # Keep the original failed outcome visible. Later validation-only steps
+        # run with always(); the explicit gate below still blocks distribution.
         timeout-minutes: 25
         env:
           DEVICE_BRIDGE_ANDROID_HELPER_APK: ${{ github.workspace }}/helpers/android/app/build/outputs/apk/release/app-release.apk
@@ -134,23 +133,36 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Test shared protocol
+        if: always()
         run: swift test --package-path packages/DeviceBridgeProtocol
       - name: Test secure channel
+        if: always()
         run: swift test --package-path packages/DeviceBridgeSecureChannel --no-parallel
       - name: Test device core
+        if: always()
         run: swift test --package-path packages/DeviceBridgeCore --no-parallel -j 1
       - name: Check packaging contracts
+        if: always()
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Check workspace state flows
+        if: always()
         run: |
           set -euo pipefail
-          bash scripts/check-device-selection.sh
-          bash scripts/check-ios-runner-workspace.sh
-          bash scripts/check-workspace-inventory.sh
-          bash scripts/check-workspace-modules.sh
-          bash scripts/check-device-information.sh
-          bash scripts/check-android-shell.sh
-          bash scripts/check-agent-api.sh
+          validation_failed=0
+          for check in \
+            scripts/check-device-selection.sh \
+            scripts/check-ios-runner-workspace.sh \
+            scripts/check-workspace-inventory.sh \
+            scripts/check-workspace-modules.sh \
+            scripts/check-device-information.sh \
+            scripts/check-android-shell.sh \
+            scripts/check-agent-api.sh; do
+            if ! bash "$check"; then
+              echo "Workspace validation failed: $check"
+              validation_failed=1
+            fi
+          done
+          exit "$validation_failed"
       - name: Require native UI success before packaging
         if: always()
         env:

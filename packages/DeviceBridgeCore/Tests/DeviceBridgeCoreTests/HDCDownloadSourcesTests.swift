@@ -155,8 +155,10 @@ struct HDCDownloadSourcesTests {
             chunks: [Data(repeating: 1, count: 3), Data(repeating: 2, count: 5)])
         let url = HDCProbeURLProtocol.store.register(fixture)
         defer { HDCProbeURLProtocol.store.remove(url) }
-        let sample = try await makeSessionTransport().probe(.init(url: url, maximumBytes: 8, timeout: 1))
+        let audit = HDCProbeEventRecorder()
+        let sample = try await makeSessionTransport(observe: audit.record).probe(.init(url: url, maximumBytes: 8, timeout: 1))
         #expect(sample.bytesReceived == 8)
+        #expect(audit.events() == [.responseDisposition(.allow), .finished(bytesAccepted: 8, failure: nil)])
         #expect(sample.duration > 0 && sample.latency >= 0 && sample.latency <= sample.duration)
         #expect(sample.finalURL == url)
         let request = try #require(HDCProbeURLProtocol.store.request(for: url))
@@ -166,20 +168,19 @@ struct HDCDownloadSourcesTests {
         #expect(request.value(forHTTPHeaderField: "Cookie") == nil)
     }
 
-    @Test("a 200 is cancelled before its package body and never becomes a full download")
+    @Test("a 200 cancels at headers without accepting any package body bytes")
     func rejectsFullResponse() async throws {
         let url = HDCProbeURLProtocol.store.register(.init(status: 200,
             headers: ["Content-Length": "2000000"], chunks: [Data(repeating: 1, count: 2_000_000)], delay: 0.1))
         defer { HDCProbeURLProtocol.store.remove(url) }
+        let audit = HDCProbeEventRecorder()
         await #expect(throws: HDCDownloadProbeFailure.rangeUnsupported) {
-            try await makeSessionTransport().probe(.init(url: url, maximumBytes: 8, timeout: 1))
+            try await makeSessionTransport(observe: audit.record).probe(.init(url: url, maximumBytes: 8, timeout: 1))
         }
-        try await Task.sleep(for: .milliseconds(120))
-        #expect(HDCProbeURLProtocol.store.emittedBytes(for: url) == 0)
-        #expect(HDCProbeURLProtocol.store.stopped(for: url))
+        try await assertRejectedResponse(audit, url: url, failure: .rangeUnsupported)
     }
 
-    @Test("invalid range and compressed responses are rejected before data", arguments: [
+    @Test("invalid range and compressed responses reject headers without accepting body bytes", arguments: [
         ("bytes 0-999/1000", "identity"), ("bytes 1-7/1000", "identity"),
         ("bytes 0-7/2", "identity"), ("bytes 0-7/1000", "gzip"),
     ])
@@ -189,10 +190,50 @@ struct HDCDownloadSourcesTests {
         ], chunks: [Data(repeating: 1, count: 8)], delay: 0.05))
         defer { HDCProbeURLProtocol.store.remove(url) }
         let expected: HDCDownloadProbeFailure = input.1 == "gzip" ? .unexpectedContentEncoding : .invalidContentRange
+        let audit = HDCProbeEventRecorder()
         await #expect(throws: expected) {
-            try await makeSessionTransport().probe(.init(url: url, maximumBytes: 8, timeout: 1))
+            try await makeSessionTransport(observe: audit.record).probe(.init(url: url, maximumBytes: 8, timeout: 1))
         }
-        #expect(HDCProbeURLProtocol.store.emittedBytes(for: url) == 0)
+        try await assertRejectedResponse(audit, url: url, failure: expected)
+    }
+
+    @Test("headers are rejected before a body exists and late in-flight bytes cannot be accepted",
+          arguments: ["full", "oversized", "offset", "total", "gzip"])
+    func rejectedHeadersBeforeAndAfterBody(_ variant: String) throws {
+        let url = URL(string: "https://downloads.example.com/controlled-delegate")!
+        let audit = HDCProbeEventRecorder()
+        let actualDisposition = HDCProbeEventRecorder()
+        let operation = HDCBoundedProbeOperation(request: .init(url: url, maximumBytes: 8, timeout: 1),
+            configuration: .ephemeral, observe: audit.record)
+        let session = URLSession(configuration: .ephemeral)
+        let suspendedTask = session.dataTask(with: url)
+        defer { suspendedTask.cancel(); session.invalidateAndCancel() }
+        let range = switch variant {
+        case "oversized": "bytes 0-999/1000"
+        case "offset": "bytes 1-7/1000"
+        case "total": "bytes 0-7/2"
+        default: "bytes 0-7/1000"
+        }
+        let expected: HDCDownloadProbeFailure = variant == "full" ? .rangeUnsupported
+            : variant == "gzip" ? .unexpectedContentEncoding : .invalidContentRange
+        let response = try #require(HTTPURLResponse(url: url, statusCode: variant == "full" ? 200 : 206,
+            httpVersion: "HTTP/1.1", headerFields: ["Content-Range": range,
+                "Content-Encoding": variant == "gzip" ? "gzip" : "identity"]))
+        // Exercise the production delegate directly so the provider has not had
+        // any opportunity to emit a body. This is not a timing-dependent mock of
+        // URLSession's (platform-dependent) custom-URLProtocol bridge.
+        operation.urlSession(session, dataTask: suspendedTask, didReceive: response) { disposition in
+            actualDisposition.record(.responseDisposition(disposition == .cancel ? .cancel : .allow))
+        }
+        #expect(actualDisposition.events() == [.responseDisposition(.cancel)])
+        #expect(audit.events() == [.responseDisposition(.cancel), .finished(bytesAccepted: 0, failure: expected)])
+        #expect(operation.acceptedByteCount == 0)
+        // An adversarial provider/network stack may have queued data before the
+        // cancellation reached it. A completed probe must still discard it all.
+        operation.urlSession(session, dataTask: suspendedTask, didReceive: Data(repeating: 1, count: 2_000_000))
+        operation.urlSession(session, dataTask: suspendedTask, didReceive: Data([2]))
+        #expect(operation.acceptedByteCount == 0)
+        #expect(audit.events() == [.responseDisposition(.cancel), .finished(bytesAccepted: 0, failure: expected)])
     }
 
     @Test("truncated and oversized samples cannot be reported as complete ranges", arguments: [3, 16])
@@ -200,9 +241,13 @@ struct HDCDownloadSourcesTests {
         let url = HDCProbeURLProtocol.store.register(.init(headers: ["Content-Range": "bytes 0-7/1000"],
             chunks: [Data(repeating: 1, count: count)]))
         defer { HDCProbeURLProtocol.store.remove(url) }
-        await #expect(throws: count < 8 ? HDCDownloadProbeFailure.incompleteRange : .byteLimitExceeded) {
-            try await makeSessionTransport().probe(.init(url: url, maximumBytes: 8, timeout: 1))
+        let audit = HDCProbeEventRecorder()
+        let failure: HDCDownloadProbeFailure = count < 8 ? .incompleteRange : .byteLimitExceeded
+        await #expect(throws: failure) {
+            try await makeSessionTransport(observe: audit.record).probe(.init(url: url, maximumBytes: 8, timeout: 1))
         }
+        #expect(audit.events() == [.responseDisposition(.allow),
+            .finished(bytesAccepted: count < 8 ? count : 0, failure: failure)])
     }
 
     @Test("deadline and Task cancellation close a stalled streaming request", arguments: [false, true])
@@ -277,11 +322,46 @@ struct HDCDownloadSourcesTests {
     }
     #endif
 
-    private func makeSessionTransport() -> URLSessionHDCDownloadProbeTransport {
+    private func assertRejectedResponse(_ audit: HDCProbeEventRecorder, url: URL,
+                                        failure: HDCDownloadProbeFailure) async throws {
+        // Provider-emitted bytes are not client-accepted bytes: Darwin's custom
+        // URLProtocol bridge can queue didLoad before it delivers the response
+        // disposition callback. Audit the actual disposition and accepted count.
+        #expect(audit.events() == [.responseDisposition(.cancel), .finished(bytesAccepted: 0, failure: failure)])
+        // Cancellation propagation is an asynchronous Foundation notification,
+        // not the sampler's hard deadline. Exit immediately once it arrives, but
+        // allow CI scheduling headroom without weakening the immediate audit.
+        let stopDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !HDCProbeURLProtocol.store.stopped(for: url), ContinuousClock.now < stopDeadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(HDCProbeURLProtocol.store.stopped(for: url))
+    }
+
+    private func makeSessionTransport(observe: (@Sendable (HDCDownloadProbeEvent) -> Void)? = nil)
+        -> URLSessionHDCDownloadProbeTransport {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [HDCProbeURLProtocol.self]
         configuration.httpAdditionalHeaders = ["Authorization": "fixture-do-not-forward", "Cookie": "fixture=not-forwarded"]
+        if let observe { return .init(configuration: configuration, observe: observe) }
         return .init(configuration: configuration)
+    }
+}
+
+private final class HDCProbeEventRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [HDCDownloadProbeEvent] = []
+
+    func record(_ event: HDCDownloadProbeEvent) {
+        lock.lock()
+        defer { lock.unlock() }
+        recorded.append(event)
+    }
+
+    func events() -> [HDCDownloadProbeEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
     }
 }
 

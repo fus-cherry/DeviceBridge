@@ -91,7 +91,9 @@ final class HDCManagerUITests: XCTestCase {
         openHDCSettings(app)
         reveal(app.textFields["hdc-source-name"], in: app, down: true)
         replace(app.textFields["hdc-source-name"], with: "Unsafe")
+        reveal(app.textFields["hdc-source-url"], in: app, down: true)
         replace(app.textFields["hdc-source-url"], with: "http://fixture.invalid/unsafe.zip")
+        reveal(app.buttons["hdc-source-add"], in: app, down: true)
         app.buttons["hdc-source-add"].click()
         reveal(app.staticTexts["hdc-error-detail"], in: app, down: true)
         XCTAssertEqual(displayedText(app.staticTexts["hdc-error-detail"]), "Custom download sources must use public HTTPS URLs without embedded credentials.")
@@ -107,6 +109,7 @@ final class HDCManagerUITests: XCTestCase {
         reveal(app.popUpButtons["hdc-artifact-architecture"], in: app, down: false)
         app.popUpButtons["hdc-artifact-architecture"].click()
         app.menuItems["Apple Silicon (arm64)"].click()
+        reveal(app.buttons["hdc-benchmark-start"], in: app, down: true)
         app.buttons["hdc-benchmark-start"].click()
         let fastID = try sourceID("Fast", root: root)
         let slowID = try sourceID("Slow", root: root)
@@ -283,12 +286,30 @@ final class HDCManagerUITests: XCTestCase {
         app.typeText(directory.path)
         app.typeKey(.return, modifierFlags: [])
         let choose = panel.buttons["OKButton"]
+        XCTAssertEqual(panel.buttons.matching(identifier: "OKButton").count, 1,
+                       "Click exactly the real panel button, not a Touch Bar mirror")
+        let location = panel.popUpButtons["where popup"]
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            choose.exists && choose.isEnabled && choose.isHittable
-                && panel.buttons[prompt].exists
+            guard choose.exists, panel.buttons[prompt].exists, location.exists,
+                  location.value as? String == directory.lastPathComponent else { return false }
+            let buttonFrame = choose.frame
+            return buttonFrame.width > 20 && buttonFrame.height > 10 && panel.frame.contains(buttonFrame)
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed, panel.debugDescription)
-        choose.click()
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed, panel.debugDescription)
+        let screenshot = XCUIScreen.main.screenshot()
+        let screenBounds = CGRect(origin: .zero, size: screenshot.image.size)
+        XCTAssertTrue(screenBounds.contains(choose.frame), "Native panel action must be fully on screen")
+        let evidence = XCTAttachment(screenshot: screenshot)
+        evidence.name = "hdc-native-panel-before-\(prompt.lowercased())"
+        evidence.lifetime = .keepAlways
+        add(evidence)
+        // The XPC-hosted panel reports its app/dialog ancestors as AXDisabled,
+        // even while this visible blue button accepts input. Click its measured
+        // on-screen center, then require real dismissal and the selected result.
+        let frame = choose.frame
+        let origin = panel.frame.origin
+        panel.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: frame.midX - origin.x, dy: frame.midY - origin.y)).click()
         let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !panel.exists }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed,
                        "Choosing or importing the directory must dismiss the real NSOpenPanel dialog")
@@ -306,18 +327,38 @@ final class HDCManagerUITests: XCTestCase {
     private func reveal(_ element: XCUIElement, in app: XCUIApplication, down: Bool) {
         let scroll = app.scrollViews["hdc-manager-scroll"]
         for _ in 0..<12 {
-            if element.exists && element.isHittable { return }
-            scroll.scroll(byDeltaX: 0, deltaY: down ? -320 : 320)
+            var deltaY: CGFloat = down ? -320 : 320
+            if element.exists {
+                let viewport = scroll.frame
+                let target = element.frame
+                if element.isHittable && viewport.contains(target) { return }
+                // Follow the actual laid-out control after source rows grow or
+                // ranking reorders them, rather than assuming one scroll direction.
+                if target.maxY > viewport.maxY {
+                    deltaY = -min(320, max(80, target.maxY - viewport.maxY + 20))
+                } else if target.minY < viewport.minY {
+                    deltaY = min(320, max(80, viewport.minY - target.minY + 20))
+                }
+            }
+            scroll.scroll(byDeltaX: 0, deltaY: deltaY)
         }
-        XCTAssertTrue(element.exists && element.isHittable, app.debugDescription)
+        XCTAssertTrue(element.exists && element.isHittable && scroll.frame.contains(element.frame), app.debugDescription)
     }
 
     @MainActor
     private func addSource(_ name: String, file: String, app: XCUIApplication) throws {
         reveal(app.textFields["hdc-source-name"], in: app, down: true)
         replace(app.textFields["hdc-source-name"], with: name)
+        reveal(app.textFields["hdc-source-url"], in: app, down: true)
         replace(app.textFields["hdc-source-url"], with: "https://fixture.invalid/\(file)")
+        reveal(app.buttons["hdc-source-add"], in: app, down: true)
         app.buttons["hdc-source-add"].click()
+        let saved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (app.textFields["hdc-source-name"].value as? String) == ""
+                && (app.textFields["hdc-source-url"].value as? String) == ""
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [saved], timeout: 3), .completed,
+                       "Adding a source must complete before growing the form again")
     }
 
     private func configuration(_ root: URL) throws -> [String: Any] {

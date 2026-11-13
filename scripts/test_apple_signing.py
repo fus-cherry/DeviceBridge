@@ -241,8 +241,12 @@ class AppleSigningTests(unittest.TestCase):
         ui = build.split("- name: Exercise sidebar and HDC manager controls", 1)[1].split("- name: Export sidebar", 1)[0]
         gate = build.split("- name: Require native UI success before packaging", 1)[1].split("- name: Build and verify DMG", 1)[0]
         self.assertIn("id: native_ui", ui)
-        self.assertIn("continue-on-error: true", ui)
+        self.assertNotIn("continue-on-error:", ui)
         self.assertIn("set -euo pipefail", ui)
+        for name in ("Test shared protocol", "Test secure channel", "Test device core",
+                     "Check packaging contracts", "Check workspace state flows"):
+            validation = build.split("- name: " + name, 1)[1].split("- name:", 1)[0]
+            self.assertIn("if: always()", validation)
         self.assertIn("if: always()", gate)
         self.assertIn("NATIVE_UI_OUTCOME: ${{ steps.native_ui.outcome }}", gate)
         self.assertIn('[[ "$NATIVE_UI_OUTCOME" == success ]]', gate)
