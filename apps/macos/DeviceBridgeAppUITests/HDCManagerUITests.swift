@@ -1,0 +1,290 @@
+import AppKit
+import XCTest
+
+/// Real settings controls on the isolated macOS CI runner. Every tool and network
+/// operation is confined to a temporary fixture; no unknown executable is launched.
+final class HDCManagerUITests: XCTestCase {
+    override func setUp() { continueAfterFailure = false }
+
+    @MainActor
+    func testHDCPathInspectionImportVersionConsentAndPersistentSelection() throws {
+        let root = try makeFixture()
+        let app = launch(root: root)
+        let entry = app.buttons["hdc-open-settings"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+        entry.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5)).click()
+        XCTAssertTrue(app.buttons["hdc-inspect"].waitForExistence(timeout: 5), "Sidebar tool-management entry must open the HDC tab directly")
+        let path = app.textFields["hdc-path-field"]
+        XCTAssertEqual(path.value as? String, root.appendingPathComponent("sdk/hdc").path)
+        app.buttons["hdc-inspect"].click()
+        assertLabel(app.staticTexts["hdc-inspection-status"], equals: "Static checks passed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("version-request.txt").path),
+                       "Static inspection must never invoke HDC")
+
+        app.buttons["hdc-check-version"].click()
+        XCTAssertTrue(app.buttons["Run version check"].waitForExistence(timeout: 3))
+        app.buttons["Cancel"].click()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("version-request.txt").path))
+        app.buttons["hdc-check-version"].click()
+        app.buttons["Run version check"].click()
+        XCTAssertTrue(app.staticTexts["HDC fixture 6.0.0"].waitForExistence(timeout: 3))
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("version-request.txt"), encoding: .utf8), "-v")
+
+        replace(path, with: root.appendingPathComponent("broken").path)
+        XCTAssertFalse(app.buttons["hdc-activate"].isEnabled, "Editing a checked path invalidates its old approval")
+        app.buttons["hdc-inspect"].click()
+        assertLabel(app.staticTexts["hdc-inspection-status"], equals: "Tool needs attention")
+        XCTAssertFalse(app.buttons["hdc-activate"].isEnabled)
+        XCTAssertTrue(app.staticTexts["Required library was not found beside HDC: libusb_shared.dylib"].exists)
+
+        app.buttons["hdc-choose-path"].click()
+        chooseDirectory(root.appendingPathComponent("sdk"), prompt: "Choose", app: app)
+        assertLabel(app.staticTexts["hdc-inspection-status"], equals: "Static checks passed")
+        app.buttons["hdc-import-directory"].click()
+        chooseDirectory(root.appendingPathComponent("sdk"), prompt: "Import", app: app)
+        let importedPath = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (path.value as? String)?.hasPrefix(root.appendingPathComponent("managed/toolchains").path) == true
+                && app.buttons["hdc-activate"].isEnabled
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [importedPath], timeout: 5), .completed)
+        let imported = try XCTUnwrap(path.value as? String)
+        XCTAssertTrue(imported.hasPrefix(root.appendingPathComponent("managed/toolchains").path))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: imported).deletingLastPathComponent().appendingPathComponent("libusb_shared.dylib")), try Data(contentsOf: root.appendingPathComponent("sdk/libusb_shared.dylib")))
+        XCTAssertFalse(app.staticTexts["HDC fixture 6.0.0"].exists, "Import must not run the version command")
+        app.buttons["hdc-activate"].click()
+        XCTAssertTrue(app.buttons["Enable and allow discovery"].waitForExistence(timeout: 3))
+        app.buttons["Cancel"].click()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("managed/configuration.json").path),
+                       "Cancelling execution consent must leave the selection unchanged")
+        app.buttons["hdc-activate"].click()
+        app.buttons["Enable and allow discovery"].click()
+        assertSelectedPath(imported, root: root)
+        record(app, name: "hdc-manager-imported-english")
+
+        app.terminate()
+        app.launch()
+        openHDCSettings(app)
+        XCTAssertEqual(app.textFields["hdc-path-field"].value as? String, imported)
+        app.buttons["hdc-clear"].click()
+        XCTAssertFalse(app.buttons["hdc-clear"].isEnabled)
+        XCTAssertTrue(app.buttons["hdc-rollback"].isEnabled)
+        app.buttons["hdc-rollback"].click()
+        assertSelectedPath(imported, root: root)
+        XCTAssertTrue(app.buttons["hdc-clear"].isEnabled)
+        XCTAssertEqual(app.buttons["hdc-inspect"].label, "Inspect path", "Container AX identifiers must not replace child control labels")
+    }
+
+    @MainActor
+    func testHDCCustomHTTPSValidationSourceRankingArchitectureMismatchAndCancellation() throws {
+        let root = try makeFixture()
+        let app = launch(root: root)
+        openHDCSettings(app)
+        reveal(app.textFields["hdc-source-name"], in: app, down: true)
+        replace(app.textFields["hdc-source-name"], with: "Unsafe")
+        replace(app.textFields["hdc-source-url"], with: "http://fixture.invalid/unsafe.zip")
+        app.buttons["hdc-source-add"].click()
+        reveal(app.staticTexts["hdc-error-detail"], in: app, down: true)
+        XCTAssertEqual(app.staticTexts["hdc-error-detail"].label, "Custom download sources must use public HTTPS URLs without embedded credentials.")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("probe-unsafe.zip.txt").path))
+
+        try addSource("Slow", file: "slow.zip", app: app)
+        try addSource("Fast", file: "fast.zip", app: app)
+        try addSource("Timeout", file: "timeout.zip", app: app)
+        reveal(app.popUpButtons["hdc-artifact-architecture"], in: app, down: false)
+        app.popUpButtons["hdc-artifact-architecture"].click()
+        app.menuItems["Intel (x86_64)"].click()
+        try addSource("Other architecture", file: "other.zip", app: app)
+        reveal(app.popUpButtons["hdc-artifact-architecture"], in: app, down: false)
+        app.popUpButtons["hdc-artifact-architecture"].click()
+        app.menuItems["Apple Silicon (arm64)"].click()
+        app.buttons["hdc-benchmark-start"].click()
+        let fastID = try sourceID("Fast", root: root)
+        let slowID = try sourceID("Slow", root: root)
+        let timeoutID = try sourceID("Timeout", root: root)
+        let otherID = try sourceID("Other architecture", root: root)
+        let fastResult = app.staticTexts["hdc-source-result-\(fastID)"]
+        XCTAssertTrue(fastResult.waitForExistence(timeout: 5))
+        XCTAssertEqual(fastResult.label, "1024 KiB/s")
+        XCTAssertEqual(app.staticTexts["hdc-source-result-\(slowID)"].label, "256 KiB/s")
+        XCTAssertEqual(app.staticTexts["hdc-source-result-\(timeoutID)"].label, "The source exceeded the sample time limit.")
+        XCTAssertEqual(app.staticTexts["hdc-source-result-\(otherID)"].label, "Only the same HDC version and architecture can be compared.")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("probe-other.zip.txt").path),
+                       "A different architecture must never be downloaded for a speed comparison")
+        let fast = app.buttons["hdc-source-open-\(fastID)"]
+        let slow = app.buttons["hdc-source-open-\(slowID)"]
+        reveal(fast, in: app, down: false)
+        XCTAssertLessThan(fast.frame.minY, slow.frame.minY, "Successful matching sources must be ranked fastest first")
+        // Far-right source-row whitespace opens that source, not its separate remove control.
+        fast.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5)).click()
+        XCTAssertTrue(app.buttons["hdc-source-remove-\(fastID)"].exists)
+        XCTAssertEqual(try sources(root).count, 5)
+        record(app, name: "hdc-manager-ranked-source-results")
+        reveal(app.popUpButtons["hdc-artifact-architecture"], in: app, down: true)
+        app.popUpButtons["hdc-artifact-architecture"].click()
+        app.menuItems["Intel (x86_64)"].click()
+        XCTAssertFalse(fastResult.exists, "Changing the comparison architecture must invalidate old speeds and ordering")
+        app.popUpButtons["hdc-artifact-architecture"].click()
+        app.menuItems["Apple Silicon (arm64)"].click()
+
+        try Data("wait".utf8).write(to: root.appendingPathComponent("benchmark-mode.txt"))
+        reveal(app.buttons["hdc-benchmark-start"], in: app, down: true)
+        app.buttons["hdc-benchmark-start"].click()
+        XCTAssertTrue(app.buttons["hdc-benchmark-cancel"].waitForExistence(timeout: 2))
+        // Wait until the fake transport has started; cancellation must stop it, not only hide a spinner.
+        let cancellation = root.appendingPathComponent("probe-cancelled.txt")
+        let waiting = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            FileManager.default.fileExists(atPath: root.appendingPathComponent("probe-waiting.txt").path)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [waiting], timeout: 3), .completed)
+        app.buttons["hdc-benchmark-cancel"].click()
+        let cancelled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in FileManager.default.fileExists(atPath: cancellation.path) }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [cancelled], timeout: 3), .completed)
+        XCTAssertTrue(app.buttons["hdc-benchmark-start"].isEnabled)
+        XCTAssertFalse(app.buttons["hdc-benchmark-cancel"].exists)
+        reveal(app.staticTexts["hdc-feedback"], in: app, down: true)
+        XCTAssertEqual(app.staticTexts["hdc-feedback"].label, "Speed test cancelled.")
+        app.terminate()
+        app.launch()
+        openHDCSettings(app)
+        XCTAssertEqual(try sourceID("Fast", root: root), fastID, "Custom source identity must persist across relaunch")
+        reveal(app.buttons["hdc-source-remove-\(timeoutID)"], in: app, down: true)
+        app.buttons["hdc-source-remove-\(timeoutID)"].click()
+        XCTAssertEqual(try sources(root).count, 4)
+        XCTAssertFalse(app.buttons["hdc-source-remove-\(timeoutID)"].exists)
+    }
+
+    @MainActor
+    func testHDCManagerChineseLabelsAndArchitectureFailure() throws {
+        let root = try makeFixture()
+        let app = launch(root: root, language: "zh-Hans")
+        openHDCSettings(app, chinese: true)
+        XCTAssertEqual(app.buttons["hdc-inspect"].label, "检查路径")
+        XCTAssertEqual(app.buttons["hdc-import-directory"].label, "导入目录…")
+        replace(app.textFields["hdc-path-field"], with: root.appendingPathComponent("intel").path)
+        app.buttons["hdc-inspect"].click()
+        assertLabel(app.staticTexts["hdc-inspection-status"], equals: "工具需要处理")
+        XCTAssertFalse(app.buttons["hdc-activate"].isEnabled)
+        XCTAssertTrue(app.staticTexts["此 HDC 不包含所需的 Apple Silicon 架构。"].exists)
+        reveal(app.buttons["hdc-official-source"], in: app, down: true)
+        XCTAssertTrue(app.buttons["hdc-official-source"].label.contains("华为官方下载 / 登录"))
+        app.buttons["hdc-official-source"].click()
+        reveal(app.staticTexts["hdc-safety-note"], in: app, down: true)
+        XCTAssertTrue(app.staticTexts["hdc-safety-note"].label.contains("不会自动解压、启用或执行"))
+        XCTAssertEqual(app.staticTexts["hdc-feedback"].label, "已在浏览器中打开下载来源。")
+        record(app, name: "hdc-manager-chinese-safety-and-sources")
+    }
+
+    private func makeFixture() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("DeviceBridge-HDC-UI-\(UUID().uuidString)", isDirectory: true)
+        for (name, cpu, hasLibrary) in [("sdk", UInt32(0x0100000c), true), ("broken", UInt32(0x0100000c), false), ("intel", UInt32(0x01000007), true)] {
+            let folder = root.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let dependency = Array("@loader_path/libusb_shared.dylib\0".utf8)
+            let size = (24 + dependency.count + 7) & ~7
+            var words: [UInt32] = [0xfeedfacf, cpu, 0, 2, 1, UInt32(size), 0, 0, 0xc, UInt32(size), 24, 0, 0, 0]
+            var bytes = Data()
+            for index in words.indices { words[index] = words[index].littleEndian }
+            words.withUnsafeBytes { bytes.append(contentsOf: $0) }
+            bytes.append(contentsOf: dependency)
+            bytes.append(contentsOf: repeatElement(UInt8(0), count: 32 + size - bytes.count))
+            let executable = folder.appendingPathComponent("hdc")
+            try bytes.write(to: executable)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+            if hasLibrary {
+                var libraryWords: [UInt32] = [0xfeedfacf, cpu, 0, 6, 0, 0, 0, 0]
+                for index in libraryWords.indices { libraryWords[index] = libraryWords[index].littleEndian }
+                let library = libraryWords.withUnsafeBytes { Data($0) }
+                try library.write(to: folder.appendingPathComponent("libusb_shared.dylib"))
+            }
+        }
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return root
+    }
+
+    @MainActor
+    private func launch(root: URL, language: String = "en") -> XCUIApplication {
+        let app = XCUIApplication()
+        let suite = "dev.debugutility.hdc-ui.\(UUID().uuidString)"
+        app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-hdc-manager", "--hdc-fixture-root", root.path,
+                               "--language-test-suite", suite, "--fixture-language", language]
+        app.launch()
+        app.activate()
+        addTeardownBlock { @MainActor in app.terminate(); UserDefaults.standard.removePersistentDomain(forName: suite) }
+        return app
+    }
+
+    @MainActor
+    private func openHDCSettings(_ app: XCUIApplication, chinese: Bool = false) {
+        app.activate()
+        app.typeKey(",", modifierFlags: .command)
+        let label = chinese ? "HDC 管理" : "HDC Manager"
+        let tab = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
+        XCTAssertTrue(tab.waitForExistence(timeout: 5), app.debugDescription)
+        tab.click()
+        XCTAssertTrue(app.buttons["hdc-inspect"].waitForExistence(timeout: 3), app.debugDescription)
+    }
+
+    @MainActor
+    private func chooseDirectory(_ directory: URL, prompt: String, app: XCUIApplication) {
+        app.typeKey("g", modifierFlags: [.command, .shift])
+        app.typeText(directory.path)
+        app.typeKey(.return, modifierFlags: [])
+        let choose = app.buttons[prompt]
+        XCTAssertTrue(choose.waitForExistence(timeout: 3), app.debugDescription)
+        choose.click()
+        XCTAssertTrue(app.buttons["hdc-inspect"].waitForExistence(timeout: 3))
+    }
+
+    @MainActor
+    private func replace(_ field: XCUIElement, with value: String) {
+        field.click()
+        field.typeKey("a", modifierFlags: .command)
+        field.typeText(value)
+    }
+
+    @MainActor
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication, down: Bool) {
+        let scroll = app.scrollViews["hdc-manager-scroll"]
+        for _ in 0..<12 {
+            if element.exists && element.isHittable { return }
+            scroll.scroll(byDeltaX: 0, deltaY: down ? -320 : 320)
+        }
+        XCTAssertTrue(element.exists && element.isHittable, app.debugDescription)
+    }
+
+    @MainActor
+    private func addSource(_ name: String, file: String, app: XCUIApplication) throws {
+        reveal(app.textFields["hdc-source-name"], in: app, down: true)
+        replace(app.textFields["hdc-source-name"], with: name)
+        replace(app.textFields["hdc-source-url"], with: "https://fixture.invalid/\(file)")
+        app.buttons["hdc-source-add"].click()
+    }
+
+    private func configuration(_ root: URL) throws -> [String: Any] {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("managed/configuration.json"))) as? [String: Any])
+    }
+    private func sources(_ root: URL) throws -> [[String: Any]] { try XCTUnwrap(configuration(root)["sources"] as? [[String: Any]]) }
+    private func sourceID(_ name: String, root: URL) throws -> String { try XCTUnwrap(sources(root).first { $0["name"] as? String == name }?["id"] as? String) }
+
+    private func assertSelectedPath(_ expected: String, root: URL) {
+        let selected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (try? self.configuration(root)["selectedExecutablePath"] as? String) == expected
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 5), .completed)
+    }
+
+    @MainActor
+    private func assertLabel(_ element: XCUIElement, equals expected: String) {
+        let match = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in element.exists && element.label == expected }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [match], timeout: 5), .completed, "Expected \(expected), got \(element.exists ? element.label : "missing")")
+    }
+
+    @MainActor
+    private func record(_ app: XCUIApplication, name: String) {
+        for attachment in [XCTAttachment(screenshot: app.screenshot()), XCTAttachment(string: app.debugDescription)] {
+            attachment.name = name
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+}

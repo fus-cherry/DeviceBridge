@@ -34,7 +34,7 @@ struct ToolchainPreflightTests {
         #expect(!directories.contains("relative"))
         let resolution = ToolchainPreflight().resolve(.hdc, searchDirectories: [])
         #expect(resolution == .missing(message: "HarmonyOS HDC was not found.",
-            recoveryAction: "Install DevEco Studio and add its SDK toolchains directory to PATH."))
+            recoveryAction: "Open Settings → HDC tools to discover or import an official toolchain."))
     }
 
     @Test("missing tool provides a user action without leaking searched paths")

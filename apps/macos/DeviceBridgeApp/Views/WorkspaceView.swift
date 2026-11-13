@@ -156,6 +156,8 @@ struct RetainedModulePane<Content: View>: View {
 struct WorkspaceView: View {
     @ObservedObject var model: WorkspaceViewModel
     @Binding var languageValue: String
+    @Binding var settingsTab: String
+    @Environment(\.openSettings) private var openSettings
     @Environment(\.interfaceLanguage) private var language
     @State private var selectedModule: WorkspaceModule = .information
     @State private var workspaceHost = UUID()
@@ -193,6 +195,9 @@ struct WorkspaceView: View {
                     description: Text(language.text("Device tools will appear here."))
                 )
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("DeviceBridgeHDCConfigurationDidChange"))) { _ in
+            model.hdcConfigurationDidChange()
         }
         .onChange(of: model.selectedDeviceIdentity, initial: true) { _, identity in
             selectedModule = selectedModule.selection(from: navigationPlatform, to: identity?.platform)
@@ -317,6 +322,17 @@ struct WorkspaceView: View {
                     .padding(.horizontal, 6)
                     .accessibilityIdentifier("device-discovery-diagnostics")
                 }
+
+                Button {
+                    settingsTab = "hdc"
+                    openSettings()
+                } label: {
+                    Label(language == .chinese ? "HDC 工具管理…" : "Manage HDC tools…", systemImage: "hammer")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 5).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("hdc-open-settings")
 
                 SidebarSection(title: language.text("Connection help"), count: nil,
                                identifier: "device-connection-guides", isExpanded: $showsConnectionHelp) {

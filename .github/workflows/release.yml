@@ -2,9 +2,14 @@ name: Build and Release
 
 on:
   push:
-    branches: [main, cloud/harmony-video-file-reading, cloud/0.1.6-candidate, cloud/0.1.7-candidate, cloud/0.1.7-sidebar-fix]
+    branches: [main, cloud/harmony-video-file-reading, cloud/0.1.6-candidate, cloud/0.1.7-candidate, cloud/0.1.7-sidebar-fix, cloud/0.1.8-candidate]
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      sign_apple:
+        description: 'Use configured Apple Secrets to sign and notarize this approved 0.1.8 candidate'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -17,7 +22,7 @@ concurrency:
 jobs:
   build:
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 85
     outputs:
       version: ${{ steps.version.outputs.version }}
       build: ${{ steps.version.outputs.build }}
@@ -84,8 +89,8 @@ jobs:
           gradle -p helpers/android --no-daemon testDebugUnitTest assembleRelease
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs \
             helpers/android/app/build/outputs/apk/release/app-release.apk
-      - name: Exercise sidebar controls on isolated macOS runner
-        timeout-minutes: 18
+      - name: Exercise sidebar and HDC manager controls on isolated macOS runner
+        timeout-minutes: 25
         env:
           DEVICE_BRIDGE_ANDROID_HELPER_APK: ${{ github.workspace }}/helpers/android/app/build/outputs/apk/release/app-release.apk
           DEVICE_BRIDGE_ANDROID_HELPER_METADATA: ${{ github.workspace }}/helpers/android/app/build/outputs/apk/release/output-metadata.json
@@ -102,6 +107,7 @@ jobs:
             -only-testing:DeviceBridgeAppUITests/DeviceWorkspaceUITests/testSidebarDiscoveredDevicesAndFullRowDisclosures \
             -only-testing:DeviceBridgeAppUITests/DeviceWorkspaceUITests/testSidebarAutomaticallyRegroupsRecoveredTransport \
             -only-testing:DeviceBridgeAppUITests/DeviceWorkspaceUITests/testSidebarChineseLayoutAndLongDeviceName \
+            -only-testing:DeviceBridgeAppUITests/HDCManagerUITests \
             CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
             2>&1 | tee .build/sidebar-ui.log
       - name: Export sidebar screenshots
@@ -152,6 +158,67 @@ jobs:
         with:
           name: DeviceBridge-${{ steps.version.outputs.version }}-build${{ steps.version.outputs.build }}
           path: ${{ steps.package.outputs.directory }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  # Fresh runner, no build caches or package execution, and no signing secrets in
+  # ordinary test/build steps. Only this approved, owner-triggered candidate may sign.
+  apple-sign:
+    needs: build
+    if: >-
+      github.repository == 'fus-cherry/DeviceBridge' &&
+      github.actor == 'fus-cherry' &&
+      github.ref == 'refs/heads/cloud/0.1.8-candidate' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.sign_apple == true))
+    runs-on: macos-26
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: DeviceBridge-${{ needs.build.outputs.version }}-build${{ needs.build.outputs.build }}
+          path: ${{ runner.temp }}/apple-input
+      - name: Sign, notarize and verify approved candidate
+        id: apple
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_BUILD: ${{ needs.build.outputs.build }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Never enable shell tracing or echo secret values.
+          python3 scripts/sign-apple-release.py \
+            --input "$RUNNER_TEMP/apple-input" \
+            --output "$RUNNER_TEMP/apple-signed" \
+            --version "$RELEASE_VERSION" --build "$RELEASE_BUILD" \
+            --commit "$EXPECTED_COMMIT" \
+            --summary "$RUNNER_TEMP/apple-signing-summary.json"
+      - name: Preserve non-secret signing outcome
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: DeviceBridge-apple-signing-outcome-${{ github.run_id }}
+          path: ${{ runner.temp }}/apple-signing-summary.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload accepted signed and notarized DMG only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: DeviceBridge-${{ needs.build.outputs.version }}-build${{ needs.build.outputs.build }}-Apple-notarized
+          path: ${{ runner.temp }}/apple-signed/
           if-no-files-found: error
           retention-days: 14
 

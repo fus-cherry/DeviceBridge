@@ -55,10 +55,19 @@ public struct HarmonyDeviceDiscoveryService: DeviceDiscovering {
         let result = try await runner.run(HostCommandRequest(
             executableURL: hdcURL, arguments: ["list", "targets", "-v"], timeout: .seconds(5)
         ))
+        let output = (result.standardOutputString + "\n" + result.standardErrorString).lowercased()
+        if output.contains("version") && (output.contains("mismatch") || output.contains("not match") || output.contains("inconsistent")) {
+            throw HDCDiscoveryFailure.versionMismatch
+        }
         guard result.exitCode == 0 else {
             throw DeviceDiscoveryError.commandFailed(exitCode: result.exitCode)
         }
         do { return try HDCDeviceParser().parse(result.standardOutputString, observedAt: observedAt) }
         catch { throw DeviceDiscoveryError.malformedOutput }
     }
+}
+
+/// Only known failure classes are surfaced; raw HDC output may contain device identifiers.
+public enum HDCDiscoveryFailure: Error, Equatable, Sendable {
+    case versionMismatch
 }

@@ -594,6 +594,24 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         }
     }
 
+    func hdcConfigurationDidChange() {
+        // Do not let an in-flight scan publish the old executable after a settings change.
+        refreshTask?.cancel()
+        refreshTask = nil
+        refreshRevision += 1
+        hdcURL = nil
+        if selectedDeviceIdentity?.platform == .harmonyOS {
+            selectionTask?.cancel()
+            selectionRevision += 1
+            isSelecting = false
+            deviceSelection = nil
+            commandReadySession = nil
+            connectionHealth = .actionRequired
+            cancelDisconnectedContent()
+        }
+        if hasStarted { requestRefresh() }
+    }
+
     func requestRefresh(isBackground: Bool = false) {
         // A manual refresh joins an in-flight poll and makes its progress visible.
         if !isBackground, !isRefreshing { isRefreshing = true }
@@ -756,12 +774,20 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         }
 
         guard !Task.isCancelled, refreshRevision == revision else { return }
-        switch preflight.resolve(.hdc, searchDirectories: searchDirectories) {
+        // Static binary checks run off the UI actor and never execute an unselected download.
+        let hdcEnvironment = ProcessInfo.processInfo.environment
+        let hdcResolution = await Task.detached {
+            HDCToolManager().resolveForDiscovery(environment: hdcEnvironment)
+        }.value
+        guard !Task.isCancelled, refreshRevision == revision else { return }
+        switch hdcResolution {
         case let .available(hdcURL):
             resolvedHDCURL = hdcURL
             do {
                 candidates += try await HarmonyDeviceDiscoveryService(hdcURL: hdcURL, runner: runner)
                     .discover(observedAt: Date())
+            } catch HDCDiscoveryFailure.versionMismatch {
+                discoveryDiagnostics.append("HDC reported a client/server version mismatch. Open HDC tools and use matching official tool versions; the existing server is not stopped automatically.")
             } catch {
                 discoveryDiagnostics.append("HarmonyOS discovery failed. Check HDC and device debugging authorization.")
             }

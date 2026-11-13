@@ -24,7 +24,7 @@ public enum HostTool: String, CaseIterable, Sendable {
         case .adb:
             "Choose Android SDK"
         case .hdc:
-            "Install DevEco Studio and add its SDK toolchains directory to PATH."
+            "Open Settings → HDC tools to discover or import an official toolchain."
         case .xcrun, .xcodebuild:
             "Open Xcode Settings"
         }
@@ -74,16 +74,20 @@ public struct ToolchainPreflight: Sendable {
         if let hdcHome = environment["HDC_HOME"], !hdcHome.isEmpty {
             directories.insert(URL(fileURLWithPath: hdcHome, isDirectory: true), at: 0)
         }
-        for key in ["DEVECO_SDK_HOME", "OHOS_SDK_HOME"] {
+        for key in ["DEVECO_SDK_HOME", "OHOS_SDK_HOME", "HARMONYOS_SDK_HOME"] {
             if let sdk = environment[key], !sdk.isEmpty {
-                directories.append(URL(fileURLWithPath: sdk, isDirectory: true)
-                    .appending(path: "default/openharmony/toolchains", directoryHint: .isDirectory))
+                for relative in ["default/HarmonyOS/toolchains", "default/openharmony/toolchains", "HarmonyOS/toolchains", "openharmony/toolchains"] {
+                    directories.append(URL(fileURLWithPath: sdk, isDirectory: true).appending(path: relative, directoryHint: .isDirectory))
+                }
                 directories.append(URL(fileURLWithPath: sdk, isDirectory: true)
                     .appending(path: "toolchains", directoryHint: .isDirectory))
             }
         }
-        directories.append(URL(fileURLWithPath:
-            "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains", isDirectory: true))
+        for app in ["/Applications/DevEco-Studio.app", "~/Applications/DevEco-Studio.app".replacingOccurrences(of: "~", with: FileManager.default.homeDirectoryForCurrentUser.path)] {
+            for variant in ["HarmonyOS", "openharmony"] {
+                directories.append(URL(fileURLWithPath: app + "/Contents/sdk/default/" + variant + "/toolchains", isDirectory: true))
+            }
+        }
         for path in (environment["PATH"] ?? "").split(separator: ":") where path.hasPrefix("/") {
             directories.append(URL(fileURLWithPath: String(path), isDirectory: true))
         }

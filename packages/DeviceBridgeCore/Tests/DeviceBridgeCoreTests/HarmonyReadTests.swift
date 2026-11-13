@@ -22,6 +22,14 @@ struct HarmonyReadTests {
         }
     }
 
+    @Test func discoveryReportsVersionMismatchWithoutChangingServer() async throws {
+        let runner = HarmonyTestRunner(outputs: ["[Fail] Client and server version mismatch"])
+        await #expect(throws: HDCDiscoveryFailure.versionMismatch) {
+            _ = try await HarmonyDeviceDiscoveryService(hdcURL: URL(fileURLWithPath: "/hdc"), runner: runner).discover(observedAt: Date())
+        }
+        #expect(await runner.requests.map(\.arguments) == [["list", "targets", "-v"]])
+    }
+
     @Test func readinessRequiresShellMarker() async throws {
         let identity = try DeviceIdentity(rawValue: "harmonyos:ABC", stability: .provisional, platform: .harmonyOS)
         let device = DeviceRecord(identity: identity, name: "Phone", authorization: .authorized,

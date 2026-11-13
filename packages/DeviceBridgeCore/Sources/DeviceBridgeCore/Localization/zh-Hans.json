@@ -747,5 +747,11 @@
   "Devices refresh automatically every 5 seconds": "每 5 秒自动刷新设备",
   "No detected devices ready for a connection check": "尚未发现可尝试连接的设备",
   "Expanded": "已展开",
-  "Collapsed": "已折叠"
+  "Collapsed": "已折叠",
+  "Open Settings → HDC tools to discover or import an official toolchain.": "打开设置中的 HDC 工具管理，查找或导入官方工具链。",
+  "Open HDC tools": "打开 HDC 工具管理",
+  "Configured HDC needs attention. Open Settings → HDC tools.": "配置的 HDC 需要处理。请打开设置中的 HDC 工具管理。",
+  "Saved HDC configuration could not be read. Open Settings → HDC tools.": "无法读取已保存的 HDC 配置。请打开设置中的 HDC 工具管理。",
+  "Installed HDC needs attention. Open Settings → HDC tools.": "已安装的 HDC 需要处理。请打开设置中的 HDC 工具管理。",
+  "HDC reported a client/server version mismatch. Open HDC tools and use matching official tool versions; the existing server is not stopped automatically.": "HDC 报告客户端与服务端版本不匹配。请打开 HDC 工具管理，使用匹配的官方版本；应用不会自动停止已有服务。"
 }

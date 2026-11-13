@@ -16,7 +16,9 @@ extension EnvironmentValues {
 @main
 struct DeviceBridgeApp: App {
     @StateObject private var model = WorkspaceViewModel()
+    @StateObject private var hdcManager = HDCManagerViewModel()
     @AppStorage("interfaceLanguage") private var languageValue = "system"
+    @AppStorage("settingsTab") private var settingsTab = "general"
     @AppStorage("iosSigningTeamID") private var iosSigningTeamID = ""
 
     init() {
@@ -37,6 +39,7 @@ struct DeviceBridgeApp: App {
                 defaults.set(fixtureLanguage, forKey: "interfaceLanguage")
             } else if index == nil { defaults.set("en", forKey: "interfaceLanguage") }
             _languageValue = AppStorage(wrappedValue: "system", "interfaceLanguage", store: defaults)
+            _settingsTab = AppStorage(wrappedValue: "general", "settingsTab", store: defaults)
         }
     }
 
@@ -45,7 +48,7 @@ struct DeviceBridgeApp: App {
             WorkspaceView(model: model, languageValue: Binding(
                 get: { InterfaceLanguage(storedValue: languageValue).rawValue },
                 set: { languageValue = $0 }
-            ))
+            ), settingsTab: $settingsTab)
                 .environment(\.interfaceLanguage, InterfaceLanguage(storedValue: languageValue).resolved())
                 .environment(\.locale, InterfaceLanguage(storedValue: languageValue).locale)
                 .onAppear { model.startAgentAPI() }
@@ -56,18 +59,27 @@ struct DeviceBridgeApp: App {
         .defaultSize(width: 1100, height: 720)
         Settings {
             let language = InterfaceLanguage(storedValue: languageValue).resolved()
-            Form {
-                TextField(language.text("Apple development Team ID"), text: $iosSigningTeamID)
-                    .textFieldStyle(.roundedBorder)
-                Text(language.text("Uses your existing local signing identity and profiles. No certificates are created. Select the iPhone again after changing this setting."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(language.text("The USB screenshot runner renews every 10 seconds and runs for up to one hour. Select the device again after the session ends."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            TabView(selection: $settingsTab) {
+                Form {
+                    TextField(language.text("Apple development Team ID"), text: $iosSigningTeamID)
+                        .textFieldStyle(.roundedBorder)
+                    Text(language.text("Uses your existing local signing identity and profiles. No certificates are created. Select the iPhone again after changing this setting."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(language.text("The USB screenshot runner renews every 10 seconds and runs for up to one hour. Select the device again after the session ends."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(20)
+                .tabItem { Label(language == .chinese ? "通用" : "General", systemImage: "gearshape") }
+                .tag("general")
+                HDCManagerView(model: hdcManager)
+                    .tabItem { Label(language == .chinese ? "HDC 管理" : "HDC Manager", systemImage: "hammer") }
+                    .tag("hdc")
             }
-            .padding(20)
-            .frame(width: 460)
+            .environment(\.interfaceLanguage, language)
+            .environment(\.locale, language.locale)
+            .frame(width: 800, height: 680)
         }
     }
 }

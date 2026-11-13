@@ -50,7 +50,7 @@ Models/AndroidShellExecution Models/AndroidShellHistory Session/DeviceSessionSto
 Discovery/HDCDeviceParser Discovery/ADBDeviceParser Discovery/CoreDeviceParser Discovery/DeviceInventory Operations/DeviceFileBrowsing
 Operations/AndroidFileProvider Operations/HarmonyFileProvider Operations/IOSFileProvider
 Operations/HarmonyDeviceInformationProvider Operations/HarmonyPackageInstallService Operations/HarmonyMediaProvider Supervision/DeviceCommandProbe
-Commands/ToolchainPreflight Operations/AndroidImageProvider Operations/FileTransferService
+Commands/ToolchainPreflight Toolchains/HDCToolManager Toolchains/HDCDownloadSources Operations/AndroidImageProvider Operations/FileTransferService
 Commands/HostCommandRunner Localization/InterfaceLanguage'''.split()
 def adapted(text):
     return text.replace('import CryptoKit', 'import Crypto').replace('import Darwin', 'import Glibc').replace('Darwin.', 'Glibc.')
@@ -64,7 +64,7 @@ f = (core / 'Sources/DeviceBridgeCore/Operations/ImageLibraryService.swift').rea
 (source / 'AutoreleasepoolShim.swift').write_text('func autoreleasepool<T>(invoking body: () throws -> T) rethrows -> T { try body() }\n')
 shutil.copyfile(core / 'Sources/DeviceBridgeCore/Localization/zh-Hans.json', source / 'zh-Hans.json')
 test_names = '''DeviceSessionStore DeviceConnectionPresentation DeviceCapabilitySummary WorkspaceModule HarmonyRead DeviceFileBrowsing AndroidFileProvider IOSFileProvider
-PhoneImageModels ToolchainPreflight AndroidImageProvider FileTransferService HarmonyPackageInstall HarmonyFileSend HarmonyTransferSession HarmonyMediaProvider'''.split()
+PhoneImageModels ToolchainPreflight HDCToolManager HDCDownloadSources AndroidImageProvider FileTransferService HarmonyPackageInstall HarmonyFileSend HarmonyTransferSession HarmonyMediaProvider'''.split()
 if args.include_host_runner: test_names.append('HostCommandRunner')
 for name in test_names:
     path = core / 'Tests/DeviceBridgeCoreTests' / (name + 'Tests.swift')
