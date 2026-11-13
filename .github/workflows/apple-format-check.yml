@@ -1,0 +1,104 @@
+name: Check Apple Secret format only
+
+on:
+  push:
+    branches: [cloud/0.1.8-apple-format-check]
+    paths: [.github/workflows/apple-format-check.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: devicebridge-apple-format-check-only
+  cancel-in-progress: false
+
+jobs:
+  format-only:
+    if: >-
+      github.repository == 'fus-cherry/DeviceBridge' &&
+      github.actor == 'fus-cherry' &&
+      github.ref == 'refs/heads/cloud/0.1.8-apple-format-check' &&
+      github.event_name == 'push' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out reviewed source without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 44f515fcad46d806c16e6fccff9ce82e8503a4f0
+          persist-credentials: false
+          path: approved-source
+      - name: Verify immutable source identity without Apple credentials
+        run: |
+          set -euo pipefail
+          [[ "$(git -C approved-source rev-parse HEAD)" == 44f515fcad46d806c16e6fccff9ce82e8503a4f0 ]]
+      - name: Validate in-memory format only; no Apple authentication or signing
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          python3 -I -B - <<'PY'
+          import sys
+
+          def check_format():
+              values = {}
+              environment = {}
+              module = None
+              names = (
+                  "APPLE_CERTIFICATE_P12_BASE64", "APPLE_CERTIFICATE_PASSWORD", "APPLE_ID",
+                  "APPLE_TEAM_ID", "APPLE_APP_SPECIFIC_PASSWORD",
+              )
+              result = 1
+              try:
+                  import importlib.util
+                  import os
+                  from pathlib import Path
+
+                  source = Path("approved-source/scripts/sign-apple-release.py").resolve(strict=True)
+                  spec = importlib.util.spec_from_file_location("reviewed_format_only_signer", source)
+                  module = importlib.util.module_from_spec(spec)
+                  spec.loader.exec_module(module)
+                  environment = dict(os.environ)
+                  try:
+                      values = module.load_secrets(environment)
+                  except module.SigningError as error:
+                      # Only reviewed, value-free load_secrets messages may leave
+                      # this process. Never echo an unknown exception or traceback.
+                      message = str(error)
+                      allowed = {
+                          "APPLE_TEAM_ID must be the 10-character developer Team ID",
+                          "APPLE_ID must be the notarization account email",
+                          *(name + " contains an invalid line break or NUL" for name in names),
+                      }
+                      prefix = "Missing GitHub Secrets: "
+                      missing = message[len(prefix):].split(", ") if message.startswith(prefix) else []
+                      if message in allowed or missing and len(set(missing)) == len(missing) and all(name in names for name in missing):
+                          print(message)
+                      else:
+                          print("format validation failed; no secret values logged")
+                  else:
+                      result = 0
+              except BaseException:
+                  print("format check failed unexpectedly; no secret values logged")
+              finally:
+                  # Drop dictionary references and process environment entries.
+                  # Immutable Python strings are not claimed to be securely wiped.
+                  try:
+                      values.clear()
+                      environment.clear()
+                      import os
+                      for name in names:
+                          os.environ.pop(name, None)
+                  except BaseException:
+                      result = 1
+                      print("format check failed unexpectedly; no secret values logged")
+                  module = None
+              if result == 0:
+                  print("format passed; no Apple authentication/signing attempted")
+              return result
+
+          raise SystemExit(check_format())
+          PY
