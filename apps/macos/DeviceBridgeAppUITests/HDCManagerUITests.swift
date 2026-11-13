@@ -26,12 +26,12 @@ final class HDCManagerUITests: XCTestCase {
                        "Static inspection must never invoke HDC")
 
         app.buttons["hdc-check-version"].click()
-        XCTAssertTrue(app.buttons["Run client version check"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", "server version and device connection are not checked", "server version and device connection are not checked")).firstMatch.exists)
-        app.buttons["Cancel"].click()
+        let versionConsent = executionSheet(app, action: "Run client version check")
+        XCTAssertTrue(versionConsent.staticTexts.matching(NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", "server version and device connection are not checked", "server version and device connection are not checked")).firstMatch.exists)
+        clickSheetButton("Cancel", in: versionConsent)
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("version-request.txt").path))
         app.buttons["hdc-check-version"].click()
-        app.buttons["Run client version check"].click()
+        clickSheetButton("Run client version check", in: executionSheet(app, action: "Run client version check"))
         assertLabel(app.staticTexts["hdc-version-result"], equals: "HDC fixture 6.0.0")
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("version-request.txt"), encoding: .utf8), "-v")
 
@@ -57,12 +57,11 @@ final class HDCManagerUITests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: imported).deletingLastPathComponent().appendingPathComponent("libusb_shared.dylib")), try Data(contentsOf: root.appendingPathComponent("sdk/libusb_shared.dylib")))
         XCTAssertFalse(app.staticTexts["hdc-version-result"].exists, "Import must not run the version command")
         app.buttons["hdc-activate"].click()
-        XCTAssertTrue(app.buttons["Enable and allow discovery"].waitForExistence(timeout: 3))
-        app.buttons["Cancel"].click()
+        clickSheetButton("Cancel", in: executionSheet(app, action: "Enable and allow discovery"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("managed/configuration.json").path),
                        "Cancelling execution consent must leave the selection unchanged")
         app.buttons["hdc-activate"].click()
-        app.buttons["Enable and allow discovery"].click()
+        clickSheetButton("Enable and allow discovery", in: executionSheet(app, action: "Enable and allow discovery"))
         assertSelectedPath(imported, root: root, app: app)
         record(app, name: "hdc-manager-imported-english")
 
@@ -239,10 +238,32 @@ final class HDCManagerUITests: XCTestCase {
         let label = chinese ? "HDC 管理" : "HDC Manager"
         // macOS renders Settings tabs as native NSToolbar buttons with AXTitle,
         // not the AXLabel exposed by SwiftUI content buttons.
-        let tab = app.buttons[label]
+        let tab = app.windows["com_apple_SwiftUI_Settings_window"].buttons[label]
         XCTAssertTrue(tab.waitForExistence(timeout: 5), app.debugDescription)
         tab.click()
         XCTAssertTrue(app.buttons["hdc-inspect"].waitForExistence(timeout: 3), app.debugDescription)
+    }
+
+    @MainActor
+    private func executionSheet(_ app: XCUIApplication, action: String) -> XCUIElement {
+        let settings = app.windows["com_apple_SwiftUI_Settings_window"]
+        let sheet = settings.sheets.firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 3), app.debugDescription)
+        XCTAssertTrue(sheet.buttons[action].waitForExistence(timeout: 3), sheet.debugDescription)
+        XCTAssertEqual(sheet.buttons.matching(NSPredicate(format: "label == %@ OR identifier == %@", action, action)).count, 1,
+                       "Execution consent must have exactly one on-screen action, excluding Touch Bar mirrors")
+        return sheet
+    }
+
+    @MainActor
+    private func clickSheetButton(_ title: String, in sheet: XCUIElement) {
+        let button = sheet.buttons[title]
+        XCTAssertEqual(sheet.buttons.matching(NSPredicate(format: "label == %@ OR identifier == %@", title, title)).count, 1, sheet.debugDescription)
+        XCTAssertTrue(button.isEnabled && button.isHittable, sheet.debugDescription)
+        button.click()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !sheet.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed,
+                       "The on-screen consent sheet must dismiss before the next operation")
     }
 
     @MainActor
@@ -251,7 +272,9 @@ final class HDCManagerUITests: XCTestCase {
         app.typeKey("a", modifierFlags: .command)
         app.typeText(directory.path)
         app.typeKey(.return, modifierFlags: [])
-        let choose = app.buttons[prompt]
+        // NSOpenPanel's window (or its hosting window's sheet) is included here;
+        // the mirrored native Touch Bar actions are deliberately excluded.
+        let choose = app.windows.buttons[prompt]
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             choose.exists && choose.isEnabled && choose.isHittable
         }, object: nil)
