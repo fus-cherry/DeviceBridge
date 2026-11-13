@@ -154,7 +154,10 @@ public struct HDCToolManager: Sendable {
             if !binary.architectures.contains("x86_64") { issues.append("This HDC tool does not include the required Intel architecture.") }
             #endif
             for dependency in dependencies {
-                if dependency.hasPrefix("/usr/lib/") || dependency.hasPrefix("/System/Library/") { continue }
+                if dependency.hasPrefix("/") {
+                    let normalized = URL(fileURLWithPath: dependency).standardizedFileURL.path
+                    if normalized.hasPrefix("/usr/lib/") || normalized.hasPrefix("/System/Library/") { continue }
+                }
                 let local: URL
                 let libraryName = URL(fileURLWithPath: dependency).lastPathComponent
                 if dependency.hasPrefix("@loader_path/") { local = directory.appendingPathComponent(String(dependency.dropFirst(13))) }
@@ -177,6 +180,11 @@ public struct HDCToolManager: Sendable {
                 else if dependency.hasPrefix("/") { local = URL(fileURLWithPath: dependency) }
                 else {
                     issues.append("Required library has an unsupported relative path: \(libraryName)")
+                    continue
+                }
+                let resolvedLibrary = local.resolvingSymlinksInPath().standardizedFileURL
+                guard resolvedLibrary.path.hasPrefix(directory.resolvingSymlinksInPath().standardizedFileURL.path + "/") else {
+                    issues.append("Required library is outside the selected toolchain directory: \(libraryName)")
                     continue
                 }
                 guard fm.fileExists(atPath: local.path) else {
@@ -249,9 +257,14 @@ public struct HDCToolManager: Sendable {
             throw HDCToolManagerError.unsafeImport("Toolchain import requires a real directory, not a symbolic link.")
         }
         let managed = rootDirectory.appendingPathComponent("toolchains", isDirectory: true)
+        let resolvedRoot = source.resolvingSymlinksInPath().standardizedFileURL
+        let resolvedManaged = managed.resolvingSymlinksInPath().standardizedFileURL
+        guard resolvedManaged.path != resolvedRoot.path,
+              !resolvedManaged.path.hasPrefix(resolvedRoot.path + "/") else {
+            throw HDCToolManagerError.unsafeImport("Import destination must not be inside the selected toolchain directory.")
+        }
         try fm.createDirectory(at: managed, withIntermediateDirectories: true)
         let destination = managed.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let resolvedRoot = source.resolvingSymlinksInPath().standardizedFileURL
         // Inspect every entry before copying. Symlinks, special files and excessive packages
         // are rejected rather than followed outside the selected dependency directory.
         guard let enumerator = fm.enumerator(at: source, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey], options: []) else {
@@ -268,8 +281,9 @@ public struct HDCToolManager: Sendable {
                 throw HDCToolManagerError.unsafeImport("Toolchain import refuses symbolic links or special files. Select an official unpacked toolchain directory.")
             }
             let size = Int64(values.fileSize ?? 0)
+            guard size >= 0, size <= 134_217_728 else { throw HDCToolManagerError.importLimit }
             if values.isRegularFile == true { total += size }
-            guard entries <= 10_000, total <= 1_073_741_824, size <= 134_217_728 else { throw HDCToolManagerError.importLimit }
+            guard entries <= 10_000, total <= 1_073_741_824 else { throw HDCToolManagerError.importLimit }
         }
         do {
             try Task.checkCancellation()
@@ -293,8 +307,9 @@ public struct HDCToolManager: Sendable {
                 }
                 copiedEntries += 1
                 let size = Int64(values.fileSize ?? 0)
+                guard size >= 0, size <= 134_217_728 else { throw HDCToolManagerError.importLimit }
                 if values.isRegularFile == true { copiedBytes += size }
-                guard copiedEntries <= 10_000, copiedBytes <= 1_073_741_824, size <= 134_217_728 else { throw HDCToolManagerError.importLimit }
+                guard copiedEntries <= 10_000, copiedBytes <= 1_073_741_824 else { throw HDCToolManagerError.importLimit }
             }
             let result = inspect(destination)
             guard result.canActivate else { throw HDCToolManagerError.invalidTool(result.issues.first ?? "Imported toolchain is invalid.") }

@@ -22,12 +22,13 @@ final class HDCManagerUITests: XCTestCase {
                        "Static inspection must never invoke HDC")
 
         app.buttons["hdc-check-version"].click()
-        XCTAssertTrue(app.buttons["Run version check"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Run client version check"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", "server version and device connection are not checked", "server version and device connection are not checked")).firstMatch.exists)
         app.buttons["Cancel"].click()
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("version-request.txt").path))
         app.buttons["hdc-check-version"].click()
-        app.buttons["Run version check"].click()
-        XCTAssertTrue(app.staticTexts["HDC fixture 6.0.0"].waitForExistence(timeout: 3))
+        app.buttons["Run client version check"].click()
+        assertLabel(app.staticTexts["hdc-version-result"], equals: "HDC fixture 6.0.0")
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("version-request.txt"), encoding: .utf8), "-v")
 
         replace(path, with: root.appendingPathComponent("broken").path)
@@ -35,7 +36,7 @@ final class HDCManagerUITests: XCTestCase {
         app.buttons["hdc-inspect"].click()
         assertLabel(app.staticTexts["hdc-inspection-status"], equals: "Tool needs attention")
         XCTAssertFalse(app.buttons["hdc-activate"].isEnabled)
-        XCTAssertTrue(app.staticTexts["Required library was not found beside HDC: libusb_shared.dylib"].exists)
+        assertLabel(app.staticTexts["hdc-inspection-issue-0"], equals: "Required library was not found beside HDC: libusb_shared.dylib")
 
         app.buttons["hdc-choose-path"].click()
         chooseDirectory(root.appendingPathComponent("sdk"), prompt: "Choose", app: app)
@@ -50,7 +51,7 @@ final class HDCManagerUITests: XCTestCase {
         let imported = try XCTUnwrap(path.value as? String)
         XCTAssertTrue(imported.hasPrefix(root.appendingPathComponent("managed/toolchains").path))
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: imported).deletingLastPathComponent().appendingPathComponent("libusb_shared.dylib")), try Data(contentsOf: root.appendingPathComponent("sdk/libusb_shared.dylib")))
-        XCTAssertFalse(app.staticTexts["HDC fixture 6.0.0"].exists, "Import must not run the version command")
+        XCTAssertFalse(app.staticTexts["hdc-version-result"].exists, "Import must not run the version command")
         app.buttons["hdc-activate"].click()
         XCTAssertTrue(app.buttons["Enable and allow discovery"].waitForExistence(timeout: 3))
         app.buttons["Cancel"].click()
@@ -84,7 +85,7 @@ final class HDCManagerUITests: XCTestCase {
         replace(app.textFields["hdc-source-url"], with: "http://fixture.invalid/unsafe.zip")
         app.buttons["hdc-source-add"].click()
         reveal(app.staticTexts["hdc-error-detail"], in: app, down: true)
-        XCTAssertEqual(app.staticTexts["hdc-error-detail"].label, "Custom download sources must use public HTTPS URLs without embedded credentials.")
+        XCTAssertEqual(displayedText(app.staticTexts["hdc-error-detail"]), "Custom download sources must use public HTTPS URLs without embedded credentials.")
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("probe-unsafe.zip.txt").path))
 
         try addSource("Slow", file: "slow.zip", app: app)
@@ -104,10 +105,10 @@ final class HDCManagerUITests: XCTestCase {
         let otherID = try sourceID("Other architecture", root: root)
         let fastResult = app.staticTexts["hdc-source-result-\(fastID)"]
         XCTAssertTrue(fastResult.waitForExistence(timeout: 5))
-        XCTAssertEqual(fastResult.label, "1024 KiB/s")
-        XCTAssertEqual(app.staticTexts["hdc-source-result-\(slowID)"].label, "256 KiB/s")
-        XCTAssertEqual(app.staticTexts["hdc-source-result-\(timeoutID)"].label, "The source exceeded the sample time limit.")
-        XCTAssertEqual(app.staticTexts["hdc-source-result-\(otherID)"].label, "Only the same HDC version and architecture can be compared.")
+        XCTAssertEqual(displayedText(fastResult), "1024 KiB/s")
+        XCTAssertEqual(displayedText(app.staticTexts["hdc-source-result-\(slowID)"]), "256 KiB/s")
+        XCTAssertEqual(displayedText(app.staticTexts["hdc-source-result-\(timeoutID)"]), "The source exceeded the sample time limit.")
+        XCTAssertEqual(displayedText(app.staticTexts["hdc-source-result-\(otherID)"]), "Only the same HDC version and architecture can be compared.")
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("probe-other.zip.txt").path),
                        "A different architecture must never be downloaded for a speed comparison")
         let fast = app.buttons["hdc-source-open-\(fastID)"]
@@ -142,7 +143,7 @@ final class HDCManagerUITests: XCTestCase {
         XCTAssertTrue(app.buttons["hdc-benchmark-start"].isEnabled)
         XCTAssertFalse(app.buttons["hdc-benchmark-cancel"].exists)
         reveal(app.staticTexts["hdc-feedback"], in: app, down: true)
-        XCTAssertEqual(app.staticTexts["hdc-feedback"].label, "Speed test cancelled.")
+        XCTAssertEqual(displayedText(app.staticTexts["hdc-feedback"]), "Speed test cancelled.")
         app.terminate()
         app.launch()
         openHDCSettings(app)
@@ -164,13 +165,13 @@ final class HDCManagerUITests: XCTestCase {
         app.buttons["hdc-inspect"].click()
         assertLabel(app.staticTexts["hdc-inspection-status"], equals: "工具需要处理")
         XCTAssertFalse(app.buttons["hdc-activate"].isEnabled)
-        XCTAssertTrue(app.staticTexts["此 HDC 不包含所需的 Apple Silicon 架构。"].exists)
+        assertLabel(app.staticTexts["hdc-inspection-issue-0"], equals: "此 HDC 不包含所需的 Apple Silicon 架构。")
         reveal(app.buttons["hdc-official-source"], in: app, down: true)
         XCTAssertTrue(app.buttons["hdc-official-source"].label.contains("华为官方下载 / 登录"))
         app.buttons["hdc-official-source"].click()
         reveal(app.staticTexts["hdc-safety-note"], in: app, down: true)
-        XCTAssertTrue(app.staticTexts["hdc-safety-note"].label.contains("不会自动解压、启用或执行"))
-        XCTAssertEqual(app.staticTexts["hdc-feedback"].label, "已在浏览器中打开下载来源。")
+        XCTAssertTrue(displayedText(app.staticTexts["hdc-safety-note"]).contains("不会自动解压、启用或执行"))
+        XCTAssertEqual(displayedText(app.staticTexts["hdc-feedback"]), "已在浏览器中打开下载来源。")
         record(app, name: "hdc-manager-chinese-safety-and-sources")
     }
 
@@ -218,7 +219,9 @@ final class HDCManagerUITests: XCTestCase {
         app.activate()
         app.typeKey(",", modifierFlags: .command)
         let label = chinese ? "HDC 管理" : "HDC Manager"
-        let tab = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
+        // macOS renders Settings tabs as native NSToolbar buttons with AXTitle,
+        // not the AXLabel exposed by SwiftUI content buttons.
+        let tab = app.buttons[label]
         XCTAssertTrue(tab.waitForExistence(timeout: 5), app.debugDescription)
         tab.click()
         XCTAssertTrue(app.buttons["hdc-inspect"].waitForExistence(timeout: 3), app.debugDescription)
@@ -275,8 +278,26 @@ final class HDCManagerUITests: XCTestCase {
 
     @MainActor
     private func assertLabel(_ element: XCUIElement, equals expected: String) {
-        let match = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in element.exists && element.label == expected }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [match], timeout: 5), .completed, "Expected \(expected), got \(element.exists ? element.label : "missing")")
+        let match = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            element.exists && self.displayedText(element) == expected
+        }, object: nil)
+        let outcome = XCTWaiter.wait(for: [match], timeout: 5)
+        if outcome != .completed {
+            let attachment = XCTAttachment(string: element.debugDescription)
+            attachment.name = "hdc-static-text-assertion-failure"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            record(XCUIApplication(), name: "hdc-static-text-failure-screen-and-hierarchy")
+        }
+        XCTAssertEqual(outcome, .completed, "Expected \(expected), got \(element.exists ? displayedText(element) : "missing")")
+    }
+
+    @MainActor
+    private func displayedText(_ element: XCUIElement) -> String {
+        // NSTextField-backed static text exposes its content through AXValue on macOS.
+        // Buttons are intentionally checked through their labels separately.
+        if let value = element.value as? String, !value.isEmpty { return value }
+        return element.label
     }
 
     @MainActor

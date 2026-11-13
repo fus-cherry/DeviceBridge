@@ -163,7 +163,7 @@ final class HDCManagerViewModel: ObservableObject {
                 let value = try await manager.version(of: inspection)
                 guard !Task.isCancelled else { return }
                 self?.version = value
-                self?.feedback = "Version check complete."
+                self?.feedback = "Client version check complete. Server version and device connection were not checked."
                 self?.failureDetail = nil
             } catch {
                 guard !Task.isCancelled else { return }
@@ -467,7 +467,7 @@ struct HDCManagerView: View {
                         HStack {
                             Button(text("Enable selected HDC")) { executionRequest = .activate; showsExecutionConfirmation = true }
                                 .disabled(!model.canSave).accessibilityIdentifier("hdc-activate")
-                            Button(text("Check version…")) { executionRequest = .version; showsExecutionConfirmation = true }
+                            Button(text("Check client version…")) { executionRequest = .version; showsExecutionConfirmation = true }
                                 .disabled(!model.canCheckVersion).accessibilityIdentifier("hdc-check-version")
                             if model.isCheckingVersion { ProgressView().controlSize(.small) }
                             Spacer()
@@ -477,12 +477,15 @@ struct HDCManagerView: View {
                                 .disabled(model.configuration.selectedExecutablePath == nil || model.isToolBusy || model.isCheckingVersion).accessibilityIdentifier("hdc-clear")
                         }
                         if let selected = model.configuration.selectedExecutablePath {
-                            LabeledContent(text("Enabled path")) { Text(selected).textSelection(.enabled).font(.caption.monospaced()) }
-                                .accessibilityIdentifier("hdc-enabled-path")
+                            LabeledContent(text("Enabled path")) {
+                                Text(selected).textSelection(.enabled).font(.caption.monospaced())
+                                    .accessibilityIdentifier("hdc-enabled-path")
+                            }
                         }
                         if let version = model.version {
-                            LabeledContent(text("Version")) { Text(version).textSelection(.enabled) }
-                                .accessibilityIdentifier("hdc-version-result")
+                            LabeledContent(text("HDC client version")) {
+                                Text(version).textSelection(.enabled).accessibilityIdentifier("hdc-version-result")
+                            }
                         }
                     }.padding(8)
                 } label: { Label(text("HDC tool"), systemImage: "hammer") }
@@ -536,33 +539,42 @@ struct HDCManagerView: View {
         }
         .accessibilityIdentifier("hdc-manager-scroll")
         .onDisappear { model.suspend() }
-        .alert(text(executionRequest == .activate ? "Enable HDC and allow automatic discovery?" : "Run the selected HDC executable?"),
+        .alert(text(executionRequest == .activate ? "Enable HDC and allow automatic discovery?" : "Run HDC client version check?"),
                isPresented: $showsExecutionConfirmation, presenting: executionRequest) { request in
             Button(text("Cancel"), role: .cancel) {}
             if request == .activate {
                 Button(text("Enable and allow discovery")) { model.activate() }.accessibilityIdentifier("hdc-confirm-activate")
             } else {
-                Button(text("Run version check")) { model.checkVersion() }.accessibilityIdentifier("hdc-confirm-version")
+                Button(text("Run client version check")) { model.checkVersion() }.accessibilityIdentifier("hdc-confirm-version")
             }
         } message: { request in
             Text(text(request == .activate
                 ? "Automatic device discovery will run this HDC every 5 seconds, and device actions will use it. Continue only if you trust this official SDK and its dependencies. Static checks do not establish trust."
-                : "This explicitly runs the selected local tool to read its version. Continue only if you trust this SDK and its dependencies.") + "\n\n" + (model.inspection?.executableURL?.path ?? ""))
+                : "This explicitly runs the selected local tool with -v to read its client version. The server version and device connection are not checked. Continue only if you trust this SDK and its dependencies.") + "\n\n" + (model.inspection?.executableURL?.path ?? ""))
         }
     }
 
     private func inspectionView(_ result: HDCInspection) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Label(text(result.canActivate ? "Static checks passed" : "Tool needs attention"), systemImage: result.canActivate ? "checkmark.circle" : "exclamationmark.triangle")
-                .foregroundStyle(result.canActivate ? Color.green : Color.orange).accessibilityIdentifier("hdc-inspection-status")
-            LabeledContent(text("Architecture")) { Text(result.architectureSummary).textSelection(.enabled) }
-                .accessibilityIdentifier("hdc-inspection-architecture")
+            HStack {
+                Image(systemName: result.canActivate ? "checkmark.circle" : "exclamationmark.triangle").accessibilityHidden(true)
+                Text(text(result.canActivate ? "Static checks passed" : "Tool needs attention"))
+                    .accessibilityIdentifier("hdc-inspection-status")
+            }.foregroundStyle(result.canActivate ? Color.green : Color.orange)
+            LabeledContent(text("Architecture")) {
+                Text(result.architectureSummary).textSelection(.enabled).accessibilityIdentifier("hdc-inspection-architecture")
+            }
             if let root = result.toolchainURL { Text(root.path).font(.caption.monospaced()).textSelection(.enabled) }
             if !result.dependencies.isEmpty {
                 Text(text("Linked dependencies")).font(.caption.weight(.semibold))
                 ForEach(Array(result.dependencies.enumerated()), id: \.offset) { _, dependency in Text(dependency).font(.caption.monospaced()).textSelection(.enabled) }
             }
-            ForEach(Array(result.issues.enumerated()), id: \.offset) { _, issue in Label(text(issue), systemImage: "xmark.circle").font(.caption).foregroundStyle(.orange) }
+            ForEach(Array(result.issues.enumerated()), id: \.offset) { index, issue in
+                HStack(alignment: .top) {
+                    Image(systemName: "xmark.circle").accessibilityHidden(true)
+                    Text(text(issue)).accessibilityIdentifier("hdc-inspection-issue-\(index)")
+                }.font(.caption).foregroundStyle(.orange)
+            }
             ForEach(Array(result.warnings.enumerated()), id: \.offset) { _, warning in Label(text(warning), systemImage: "info.circle").font(.caption).foregroundStyle(.secondary) }
         }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
@@ -583,7 +595,10 @@ struct HDCManagerView: View {
                             .font(.caption).foregroundStyle(.orange)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityIdentifier(source.requiresBrowser ? "hdc-official-source" : "hdc-source-open-\(source.id.uuidString)")
+            }.buttonStyle(.plain)
+                .accessibilityLabel(source.requiresBrowser ? text("Huawei official download / sign in") : source.name)
+                .accessibilityValue(source.url.absoluteString)
+                .accessibilityIdentifier(source.requiresBrowser ? "hdc-official-source" : "hdc-source-open-\(source.id.uuidString)")
             if let result = model.benchmarkResults.first(where: { $0.sourceID == source.id }) {
                 VStack(alignment: .trailing, spacing: 3) {
                     Text(result.bytesPerSecond.map { String(format: "%.0f KiB/s", $0 / 1024) } ?? text(result.failure?.message ?? "Not comparable / unavailable"))
@@ -611,13 +626,23 @@ struct HDCManagerView: View {
 
 private func hdcText(_ key: String, language: InterfaceLanguage) -> String {
     guard language.resolved() == .chinese else { return key }
-    let libraryPrefix = "Required library was not found beside HDC: "
-    if key.hasPrefix(libraryPrefix) { return "HDC 旁缺少所需依赖库：" + key.dropFirst(libraryPrefix.count) }
+    let dependencyPrefixes: [(String, String)] = [
+        ("Required library was not found beside HDC: ", "HDC 旁缺少所需依赖库："),
+        ("Required library is outside the selected toolchain directory: ", "所需依赖库位于所选工具链目录之外："),
+        ("Required library could not be resolved using LC_RPATH: ", "无法通过 LC_RPATH 解析所需依赖库："),
+        ("Required library has an unsupported relative path: ", "所需依赖库使用不受支持的相对路径："),
+        ("Required library is not a supported macOS dynamic library: ", "所需依赖库不是受支持的 macOS 动态库："),
+        ("Required library has the wrong host architecture: ", "所需依赖库的架构不适用于当前 Mac：")
+    ]
+    for (prefix, translation) in dependencyPrefixes where key.hasPrefix(prefix) {
+        return translation + key.dropFirst(prefix.count)
+    }
     return hdcChinese[key] ?? key
 }
 
 private let hdcChinese: [String: String] = [
     "Import": "导入", "Choose": "选择",
+    "Import destination must not be inside the selected toolchain directory.": "导入目标不能位于所选工具链目录内。",
     "Enable HDC and allow automatic discovery?": "启用 HDC 并允许自动发现设备？",
     "Enable and allow discovery": "启用并允许发现设备",
     "Automatic device discovery will run this HDC every 5 seconds, and device actions will use it. Continue only if you trust this official SDK and its dependencies. Static checks do not establish trust.": "自动发现设备会每 5 秒运行此 HDC，设备操作也将使用它。仅在信任此官方 SDK 及其依赖时继续。静态检查不代表可信度。",
@@ -647,8 +672,8 @@ private let hdcChinese: [String: String] = [
     "HDC tool": "HDC 工具", "Download sources": "下载来源", "HDC executable or SDK directory": "HDC 可执行文件或 SDK 目录",
     "Use a trusted HarmonyOS SDK toolchain. Selecting or inspecting a path never executes it.": "请选择可信的鸿蒙 SDK 工具链。选择或检查路径不会执行工具。",
     "Choose path…": "选择路径…", "Import directory…": "导入目录…", "Inspect path": "检查路径", "Find installed tools": "查找已安装工具",
-    "Enable selected HDC": "启用所选 HDC", "Check version…": "检查版本…", "Restore previous": "恢复上一项", "Clear selection": "清除选择",
-    "Enabled path": "已启用路径", "Version": "版本", "Architecture": "架构", "Exact version": "确切版本", "Linked dependencies": "链接依赖",
+    "Enable selected HDC": "启用所选 HDC", "Check client version…": "检查客户端版本…", "Restore previous": "恢复上一项", "Clear selection": "清除选择",
+    "Enabled path": "已启用路径", "HDC client version": "HDC 客户端版本", "Version": "版本", "Architecture": "架构", "Exact version": "确切版本", "Linked dependencies": "链接依赖",
     "Static checks passed": "静态检查通过", "Tool needs attention": "工具需要处理", "Cancel": "取消",
     "The official Huawei entry opens in your browser for any required sign-in. No account credentials are collected here.": "华为官方入口将在浏览器中打开，请在官方网站完成登录。本应用不收集账号凭据。",
     "Test source speeds": "测试来源速度", "Bounded samples only. Same version and architecture required; speed does not establish trust.": "仅下载有限样本。必须是相同版本和架构；速度不代表可信度。",
@@ -657,11 +682,11 @@ private let hdcChinese: [String: String] = [
     "Checksum supplied · not verified": "已提供校验值 · 尚未验证",
     "Huawei official download / sign in": "华为官方下载 / 登录", "Custom source · not verified": "自定义来源 · 未验证", "Not comparable / unavailable": "不可比较 / 不可用",
     "Downloaded packages are not automatically extracted, enabled or executed. Import a trusted SDK directory after checking its origin. DeviceBridge does not modify system PATH.": "下载的包不会自动解压、启用或执行。请确认来源后导入可信的 SDK 目录。DeviceBridge 不会修改系统 PATH。",
-    "Run the selected HDC executable?": "运行所选 HDC 可执行文件？", "Run version check": "运行版本检查",
-    "This explicitly runs the selected local tool to read its version. Continue only if you trust this SDK and its dependencies.": "此操作会明确运行所选本地工具以读取版本。仅在信任此 SDK 及其依赖时继续。",
+    "Run HDC client version check?": "运行 HDC 客户端版本检查？", "Run client version check": "检查客户端版本",
+    "This explicitly runs the selected local tool with -v to read its client version. The server version and device connection are not checked. Continue only if you trust this SDK and its dependencies.": "此操作会明确运行所选本地工具的 -v 命令以读取客户端版本，不检查服务端版本或设备连接。仅在信任此 SDK 及其依赖时继续。",
     "Static inspection complete. No executable was run.": "静态检查完成，未运行任何可执行文件。",
     "Toolchain imported. Inspect the result before enabling it. Nothing was run.": "工具链已导入。请检查结果后再启用，未运行任何工具。",
-    "Version check complete.": "版本检查完成。", "No installed HDC tool was found. Choose an SDK directory or import one.": "未找到已安装的 HDC，请选择或导入 SDK 目录。",
+    "Client version check complete. Server version and device connection were not checked.": "客户端版本检查完成，未检查服务端版本或设备连接。", "No installed HDC tool was found. Choose an SDK directory or import one.": "未找到已安装的 HDC，请选择或导入 SDK 目录。",
     "Installed paths found. Select one to inspect it.": "已找到安装路径，选择一项以检查。",
     "HDC enabled for DeviceBridge. Reconnect HarmonyOS devices to use this tool.": "已为 DeviceBridge 启用 HDC。请重新连接鸿蒙设备以使用此工具。",
     "Selected HDC cleared. System PATH was not changed.": "已清除 HDC 选择，系统 PATH 未改变。", "Previous HDC selection restored.": "已恢复上一次 HDC 选择。",

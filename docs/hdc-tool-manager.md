@@ -10,7 +10,7 @@ Use **Import directory** to copy an unpacked official toolchain and its sibling 
 
 Enable a checked tool explicitly. This authorizes subsequent device discovery to run that tool. Checking `hdc -v` has its own execution confirmation. No quarantine flags or macOS security prompts are removed or bypassed. Changing a tool invalidates pending discovery and HarmonyOS operations; reconnect the HarmonyOS device. A previous selection can be restored, and clearing selection restores ordinary automatic discovery.
 
-The client version is obtained only by an explicit check. A known client/server version mismatch from HDC is reported without automatically stopping or replacing an existing server. A detected transport is not proof that every device feature or permission is available.
+The client version is obtained only by an explicit `hdc -v` check. This is not the server version or a connection check: `hdc version` and `hdc checkserver` are not run by this settings action. A known client/server version mismatch from ordinary device discovery is reported without automatically stopping or replacing an existing server. A detected transport is not proof that every device feature or permission is available.
 
 ## Download sources and speed tests
 

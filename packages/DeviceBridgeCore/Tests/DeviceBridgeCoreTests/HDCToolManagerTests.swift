@@ -234,4 +234,41 @@ struct HDCToolManagerTests {
         #expect(!FileManager.default.fileExists(atPath: managed.path))
     }
 
+    @Test("dependency inspection refuses paths outside the selected toolchain")
+    func externalLibraryIsNotRead() throws {
+        let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+        #if arch(arm64)
+        let cpu: UInt32 = 0x0100000c
+        #else
+        let cpu: UInt32 = 0x01000007
+        #endif
+        let external = root.appendingPathComponent("external.dylib")
+        try binary(cpu: cpu, fileType: 6).write(to: external)
+        let directory = root.appendingPathComponent("toolchain")
+        let tool = try writeTool(directory, cpu: cpu)
+        // Absolute, loader-relative and symlink paths must all stay inside the SDK.
+        let linkedLibrary = directory.appendingPathComponent("linked.dylib")
+        try FileManager.default.createSymbolicLink(at: linkedLibrary, withDestinationURL: external)
+        for dependency in [external.path, "@loader_path/../external.dylib", "@loader_path/linked.dylib"] {
+            try binary(cpu: cpu, dependencies: [dependency]).write(to: tool)
+            let result = HDCToolManager().inspect(tool)
+            #expect(!result.canActivate)
+            #expect(result.issues.contains(where: { $0.contains("outside the selected toolchain") }))
+        }
+    }
+
+    @Test("import rejects a destination nested inside the selected toolchain before copying")
+    func recursiveImportDestination() throws {
+        let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+        #if arch(arm64)
+        let cpu: UInt32 = 0x0100000c
+        #else
+        let cpu: UInt32 = 0x01000007
+        #endif
+        _ = try writeTool(root, cpu: cpu)
+        let managed = root.appendingPathComponent("managed")
+        #expect(throws: HDCToolManagerError.self) { try HDCToolManager(rootDirectory: managed).importDirectory(root) }
+        #expect(!FileManager.default.fileExists(atPath: managed.path))
+    }
+
 }

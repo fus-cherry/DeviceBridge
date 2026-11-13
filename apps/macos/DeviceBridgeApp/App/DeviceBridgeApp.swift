@@ -60,15 +60,19 @@ struct DeviceBridgeApp: App {
         Settings {
             let language = InterfaceLanguage(storedValue: languageValue).resolved()
             TabView(selection: $settingsTab) {
-                Form {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(language.text("Apple development Team ID")).font(.headline)
                     TextField(language.text("Apple development Team ID"), text: $iosSigningTeamID)
                         .textFieldStyle(.roundedBorder)
                     Text(language.text("Uses your existing local signing identity and profiles. No certificates are created. Select the iPhone again after changing this setting."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(language.text("The USB screenshot runner renews every 10 seconds and runs for up to one hour. Select the device again after the session ends."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
                 }
                 .padding(20)
                 .tabItem { Label(language == .chinese ? "通用" : "General", systemImage: "gearshape") }
@@ -79,7 +83,7 @@ struct DeviceBridgeApp: App {
             }
             .environment(\.interfaceLanguage, language)
             .environment(\.locale, language.locale)
-            .frame(width: 800, height: 680)
+            .frame(width: 800, height: 560)
         }
     }
 }
