@@ -209,7 +209,9 @@ final class FileTransferDialogUITests: XCTestCase {
 
     @MainActor
     private func picker(_ app: XCUIApplication, save: Bool = false) -> XCUIElement {
-        let panel = app.descendants(matching: .any).matching(identifier: save ? "file-transfer-save-panel" : "open-panel").firstMatch
+        // XPC-hosted NSSavePanel exposes the system AX identifier "save-panel";
+        // setting NSWindow.identifier does not replace that native identifier.
+        let panel = app.descendants(matching: .any).matching(identifier: save ? "save-panel" : "open-panel").firstMatch
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         return panel
     }
