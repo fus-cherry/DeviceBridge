@@ -18,7 +18,7 @@ final class FileTransferDialogUITests: XCTestCase {
         app.typeKey(.escape, modifierFlags: [])
         dismissed(first)
         XCTAssertEqual(try events(root).count, 0)
-        XCTAssertTrue(app.buttons["files-send"].isEnabled)
+        XCTAssertTrue(workspace(app).buttons["files-send"].isEnabled)
 
         click("files-send", app)
         choose(root.appendingPathComponent("sample.apk"), app: app)
@@ -41,7 +41,7 @@ final class FileTransferDialogUITests: XCTestCase {
         XCTAssertEqual(event["operation"], "send")
         XCTAssertEqual(event["fileName"], "sample.apk")
         XCTAssertEqual(event["transportID"], "UI-HARMONY")
-        XCTAssertTrue(app.staticTexts["files-feedback"].waitForExistence(timeout: 5))
+        XCTAssertTrue(workspace(app).staticTexts["files-feedback"].waitForExistence(timeout: 5))
         XCTAssertEqual(try events(root).count, 1, "One consent must produce exactly one fixture send")
     }
 
@@ -49,7 +49,7 @@ final class FileTransferDialogUITests: XCTestCase {
     func testReceiveSavePanelCancellationThenWritesOnlyFixtureDestination() throws {
         let root = try fixture()
         let app = launch(root)
-        let relativePath = app.textFields["files-relative-path"]
+        let relativePath = workspace(app).textFields["files-relative-path"]
         reveal(relativePath, app)
         replace(relativePath, "received.txt")
         click("files-receive", app)
@@ -102,7 +102,7 @@ final class FileTransferDialogUITests: XCTestCase {
         approved.buttons["Install or update"].click()
         dismissed(approved)
         try waitForEvents(1, root: root)
-        let failure = app.staticTexts["files-install-feedback"]
+        let failure = workspace(app).staticTexts["files-install-feedback"]
         let failed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             failure.exists && self.text(failure).contains("Fixture installer stopped before any device action.")
         }, object: nil)
@@ -125,14 +125,27 @@ final class FileTransferDialogUITests: XCTestCase {
 
         // A native sheet blocks only its owning window. Open another real
         // Workspace window and change the shared selection through its sidebar.
-        let previousWindowCount = app.windows.count
+        let previousWindowIDs = Set(app.windows.allElementsBoundByIndex.map(\.identifier))
+        let previousWindowCount = previousWindowIDs.count
         app.typeKey("n", modifierFlags: .command)
         let opened = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             app.windows.count > previousWindowCount
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [opened], timeout: 5), .completed,
                        "New Window must remain available while a file sheet is pending")
-        let newWindow = app.windows.firstMatch
+        let addedWindowIDs = app.windows.allElementsBoundByIndex.map(\.identifier)
+            .filter { !previousWindowIDs.contains($0) }
+        XCTAssertEqual(addedWindowIDs.count, 1, "New Window must create exactly one additional Workspace")
+        let addedWindowID = try XCTUnwrap(addedWindowIDs.first)
+        let newWindow = app.windows[addedWindowID]
+        // Closing our extra window is part of fixture isolation. Termination alone
+        // lets SwiftUI/AppKit restore both windows in the next test process.
+        addTeardownBlock { @MainActor in
+            if app.state != .notRunning && newWindow.exists {
+                newWindow.buttons["_XCUI:CloseWindow"].click()
+                self.dismissed(newWindow)
+            }
+        }
         let sidebar = newWindow.scrollViews["device-sidebar"]
         XCTAssertTrue(sidebar.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertFalse(newWindow.descendants(matching: .any).matching(identifier: "open-panel").firstMatch.exists,
@@ -150,6 +163,12 @@ final class FileTransferDialogUITests: XCTestCase {
         XCTAssertEqual(try events(root).count, 0,
                        "Changing device must invalidate the old picker without sending to either device")
         record("second-window-device-switch-cancelled-pending-picker")
+        newWindow.buttons["_XCUI:CloseWindow"].click()
+        dismissed(newWindow)
+        XCTAssertEqual(app.windows.count, previousWindowCount,
+                       "The test must close its extra native window before the app can save restoration state")
+        XCTAssertTrue(workspace(app).scrollViews["device-sidebar"].isHittable,
+                      "The original Workspace must be usable after the second window closes")
     }
 
     private func fixture() throws -> URL {
@@ -165,7 +184,9 @@ final class FileTransferDialogUITests: XCTestCase {
     private func launch(_ root: URL) -> XCUIApplication {
         let suite = "dev.debugutility.file-dialog-test.\(UUID().uuidString)"
         let app = XCUIApplication()
-        app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-sidebar", "--fixture-file-dialogs",
+        // Process-only NSApplication argument. Never edit the user's saved
+        // window preferences or delete the app's restoration data on disk.
+        app.launchArguments = ["-ApplePersistenceIgnoreState", "YES", "--ui-testing", "--fixture-devices", "--fixture-sidebar", "--fixture-file-dialogs",
                                "--fixture-file-dialog-root", root.path, "--language-test-suite", suite, "--fixture-language", "en"]
         addTeardownBlock { @MainActor in
             app.terminate()
@@ -173,22 +194,33 @@ final class FileTransferDialogUITests: XCTestCase {
         }
         app.launch()
         app.activate()
-        let sidebar = app.scrollViews["device-sidebar"]
-        if !sidebar.waitForExistence(timeout: 2) {
+        let workspaces = app.windows.containing(.scrollView, identifier: "device-sidebar")
+        if !workspaces.firstMatch.waitForExistence(timeout: 2) {
             app.typeKey("n", modifierFlags: .command)
             app.activate()
         }
-        XCTAssertTrue(sidebar.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(workspaces.firstMatch.waitForExistence(timeout: 10), app.debugDescription)
+        let window = workspace(app)
+        let sidebar = window.scrollViews["device-sidebar"]
+        XCTAssertTrue(sidebar.isHittable, "The isolated Workspace must be visible in the foreground")
         let harmony = sidebar.buttons["device-row-harmonyos:UI-HARMONY"]
         XCTAssertTrue(harmony.waitForExistence(timeout: 5), app.debugDescription)
         harmony.click()
-        XCTAssertTrue(app.buttons["module-files"].waitForExistence(timeout: 5))
-        app.buttons["module-files"].click()
-        let identifier = app.textFields["files-scope-identifier"]
+        XCTAssertTrue(window.buttons["module-files"].waitForExistence(timeout: 5))
+        window.buttons["module-files"].click()
+        let identifier = window.textFields["files-scope-identifier"]
         XCTAssertTrue(identifier.waitForExistence(timeout: 5), app.debugDescription)
         reveal(identifier, app)
         replace(identifier, "100")
         return app
+    }
+
+    @MainActor
+    private func workspace(_ app: XCUIApplication) -> XCUIElement {
+        let windows = app.windows.containing(.scrollView, identifier: "device-sidebar")
+        XCTAssertEqual(windows.count, 1,
+                       "Each fixture launch must expose exactly one Workspace, not restored windows from another test")
+        return windows.element(boundBy: 0)
     }
 
     private func events(_ root: URL) throws -> [[String: String]] {
@@ -244,7 +276,7 @@ final class FileTransferDialogUITests: XCTestCase {
 
     @MainActor
     private func click(_ id: String, _ app: XCUIApplication, twice: Bool = false) {
-        let button = app.buttons[id]
+        let button = workspace(app).buttons[id]
         reveal(button, app)
         XCTAssertTrue(button.isEnabled, button.debugDescription)
         if twice { button.doubleClick() } else { button.click() }
@@ -252,7 +284,7 @@ final class FileTransferDialogUITests: XCTestCase {
 
     @MainActor
     private func reveal(_ element: XCUIElement, _ app: XCUIApplication) {
-        let scroll = app.scrollViews["device-workspace-scroll"]
+        let scroll = workspace(app).scrollViews["device-workspace-scroll"]
         XCTAssertTrue(scroll.waitForExistence(timeout: 5))
         for _ in 0..<14 {
             var deltaY: CGFloat = -260

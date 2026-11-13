@@ -123,6 +123,8 @@ final class HDCManagerUITests: XCTestCase {
 
         app.terminate()
         app.launch()
+        app.activate()
+        _ = ensureWorkspaceSidebar(app)
         openHDCSettings(app)
         XCTAssertEqual(app.textFields["hdc-path-field"].value as? String, imported)
         app.buttons["hdc-clear"].click()
@@ -214,6 +216,8 @@ final class HDCManagerUITests: XCTestCase {
         XCTAssertEqual(displayedText(app.staticTexts["hdc-feedback"]), "Speed test cancelled.")
         app.terminate()
         app.launch()
+        app.activate()
+        _ = ensureWorkspaceSidebar(app)
         openHDCSettings(app)
         XCTAssertEqual(try sourceID("Fast", root: root), fastID, "Custom source identity must persist across relaunch")
         reveal(app.buttons["hdc-source-remove-\(timeoutID)"], in: app, down: true)
@@ -279,25 +283,31 @@ final class HDCManagerUITests: XCTestCase {
             defaults.set(legacySigningTeam, forKey: "iosSigningTeamID")
             defaults.synchronize()
         }
-        app.launchArguments = ["--ui-testing", "--fixture-devices", "--fixture-hdc-manager", "--hdc-fixture-root", root.path,
+        // Ignore restoration only in this launched test process. A previous
+        // multiwindow test must not change the Workspace under the sidebar test.
+        app.launchArguments = ["-ApplePersistenceIgnoreState", "YES", "--ui-testing", "--fixture-devices", "--fixture-hdc-manager", "--hdc-fixture-root", root.path,
                                "--language-test-suite", suite, "--fixture-language", language]
         app.launch()
         app.activate()
         addTeardownBlock { @MainActor in app.terminate(); UserDefaults.standard.removePersistentDomain(forName: suite) }
+        _ = ensureWorkspaceSidebar(app)
         return app
     }
 
     @MainActor
     private func ensureWorkspaceSidebar(_ app: XCUIApplication) -> XCUIElement {
-        let sidebar = app.scrollViews["device-sidebar"]
+        let workspaces = app.windows.containing(.scrollView, identifier: "device-sidebar")
         // macOS can relaunch a WindowGroup app with no restored windows after an
         // earlier test terminated it from Settings. This is ordinary New Window,
         // not a fixture-only navigation shortcut or a bypass of the sidebar entry.
-        if !sidebar.waitForExistence(timeout: 2) {
+        if !workspaces.firstMatch.waitForExistence(timeout: 2) {
             app.typeKey("n", modifierFlags: .command)
             app.activate()
         }
-        XCTAssertTrue(sidebar.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(workspaces.firstMatch.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertEqual(workspaces.count, 1, "HDC tests require one isolated Workspace, not multiple restored windows")
+        let sidebar = workspaces.element(boundBy: 0).scrollViews["device-sidebar"]
+        XCTAssertTrue(sidebar.isHittable, "The controlled Workspace sidebar must be in the foreground")
         return sidebar
     }
 
