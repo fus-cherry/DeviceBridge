@@ -1,0 +1,39 @@
+name: Diagnose Apple certificate locally only
+on:
+  push:
+    branches: [cloud/0.1.8-apple-certificate-diagnostic]
+    paths: [.github/workflows/apple-certificate-diagnostic.yml]
+permissions:
+  contents: read
+concurrency:
+  group: devicebridge-apple-local-certificate-diagnostic
+  cancel-in-progress: false
+jobs:
+  local-diagnostic:
+    if: >-
+      github.repository == 'fus-cherry/DeviceBridge' &&
+      github.actor == 'fus-cherry' &&
+      github.ref == 'refs/heads/cloud/0.1.8-apple-certificate-diagnostic' &&
+      github.event_name == 'push' && github.run_attempt == 1
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - name: Check out reviewed diagnostics without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Test controls without Apple credentials
+        run: python3 -I -B scripts/test_apple_certificate_diagnostic.py
+      - name: Compile optional local lookup without Apple credentials
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          /usr/bin/xcrun swiftc scripts/apple-local-identity-probe.swift -o "$RUNNER_TEMP/devicebridge-local-identity-probe"
+          chmod 700 "$RUNNER_TEMP/devicebridge-local-identity-probe"
+      - name: Diagnose temporary local certificate without Apple authentication or signing
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: python3 -I -B scripts/diagnose-apple-certificate.py --identity-probe "$RUNNER_TEMP/devicebridge-local-identity-probe"
