@@ -33,11 +33,15 @@ are pinned to commits. Checkout has no persisted credentials. There is no cache
 restore in the signing job. Only the signing step maps Apple Secrets. Its child
 tools do not inherit them; required values are passed to Apple's tools without
 shell interpolation or tracing, and tool output is captured rather than echoed.
-A temporary private keychain is used explicitly; no default keychain is changed
-and the existing keychain search list is never replaced. Apple’s create-keychain
-may register this temporary chain in the isolated runner’s search list; deletion
-removes it. No user computer or persistent runner is used. Certificate files and this keychain are
-removed in a finally block, including after failures. No private temp directory
+A temporary private keychain is used explicitly on an isolated, short-lived CI
+runner. The complete original user keychain search list is preserved. Only the
+self-created chain is temporarily appended when missing, then the exact original
+list is restored and read back before that chain is deleted. Default keychain,
+trust settings, roots and existing keychain access controls are not changed.
+No user computer or persistent runner is used. Certificate files and this
+keychain are removed in a finally block, including after failures. Accepted
+release metadata is written only after restoration and keychain cleanup succeed;
+previous notarization submission IDs remain available even if cleanup fails. No private temp directory
 is uploaded. Cancellation that terminates the runner is also contained by the
 ephemeral GitHub-hosted runner, not a persistent user computer.
 
@@ -92,3 +96,26 @@ Apple or replace the macOS signing job.
 - [Apple notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)
 - [Apple notarytool migration and keychain credentials](https://developer.apple.com/documentation/technotes/tn3147-migrating-to-the-latest-notarization-tool)
 - [GitHub certificate handling on isolated macOS runners](https://docs.github.com/en/actions/how-tos/deploy/deploy-to-third-party-platforms/sign-xcode-applications)
+
+## Build143 scoped signing-only repair
+
+The app package remains the already-tested Build143 from immutable app source
+`44f515fcad46d806c16e6fccff9ce82e8503a4f0`; it is not recompiled. The reviewed,
+repaired signing controls are a separate immutable workflow-run commit
+(`github.sha`), with the signer file additionally pinned by SHA-256. Do not
+mislabel the repaired script as the unchanged original Build143 signer.
+
+The one-shot `cloud/0.1.8-build143-scoped-signing` workflow checks exact package
+and prior failure IDs/digests, successful terminal A/B source/job IDs, and the
+unique exact controlled A/B log result before any Apple Secrets are mapped.
+That experiment found the original CLI identity lookup missing, then verified
+that retaining all search entries and including the owned chain made a new CLI
+copy pass strict signature/Team checks. It also verified exact list restoration.
+This diagnostic did not sign the complete App or submit any notarization request.
+Only actual App and DMG Accepted results plus all original stapling, Gatekeeper,
+identity and integrity gates can establish release success.
+
+The new workflow never creates a Release or merges main. Failed or pending Apple
+submissions must be inspected using their retained IDs, not blindly replayed.
+The isolated runner is used exclusively for this flow; snapshot restoration does
+not claim support for arbitrary concurrent keychain-list modifications.

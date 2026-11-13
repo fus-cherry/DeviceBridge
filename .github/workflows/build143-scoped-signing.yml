@@ -1,0 +1,76 @@
+name: Sign verified Build143 with scoped keychain repair once
+on:
+  push:
+    branches: [cloud/0.1.8-build143-scoped-signing]
+    paths: [.github/workflows/build143-scoped-signing.yml]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: devicebridge-build143-scoped-signing-once
+  cancel-in-progress: false
+jobs:
+  scoped-signing:
+    if: >-
+      github.repository == 'fus-cherry/DeviceBridge' &&
+      github.actor == 'fus-cherry' &&
+      github.ref == 'refs/heads/cloud/0.1.8-build143-scoped-signing' &&
+      github.event_name == 'push' && github.run_attempt == 1
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Check out reviewed signing controls at this immutable run commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify separate build and signing-control sources without Apple credentials
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          python3 -I -B - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          expected = "164655c7ab7a1fae6ff8b37757be0c44fa6afc6e6e4e9b674a7499d53cab211f"
+          if hashlib.sha256(Path("scripts/sign-apple-release.py").read_bytes()).hexdigest() != expected:
+              raise SystemExit("Reviewed scoped signer does not match its approved SHA-256")
+          print("App build source: 44f515fcad46d806c16e6fccff9ce82e8503a4f0")
+          print("Reviewed signing-control source: " + os.environ["GITHUB_SHA"])
+          PY
+          python3 -I -B scripts/test_apple_signing.py
+          python3 -I -B scripts/test_build143_scoped_signing.py
+      - name: Verify fixed package and successful A/B evidence without Apple credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I -B scripts/verify-build143-scoped-signing.py --output "$RUNNER_TEMP/apple-input"
+      - name: Sign, notarize and fully verify only the already-tested Build143
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          python3 -I -B scripts/sign-apple-release.py \
+            --input "$RUNNER_TEMP/apple-input" --output "$RUNNER_TEMP/apple-signed" \
+            --version 0.1.8 --build 143 \
+            --commit 44f515fcad46d806c16e6fccff9ce82e8503a4f0 \
+            --summary "$RUNNER_TEMP/apple-signing-summary.json"
+      - name: Preserve non-secret outcome and all notarization submission states
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: DeviceBridge-build143-scoped-signing-outcome-${{ github.run_id }}
+          path: ${{ runner.temp }}/apple-signing-summary.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload only fully accepted, stapled and verified signed output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: DeviceBridge-0.1.8-build143-Apple-notarized-scoped
+          path: ${{ runner.temp }}/apple-signed/
+          if-no-files-found: error
+          retention-days: 14

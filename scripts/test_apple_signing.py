@@ -28,17 +28,34 @@ VALUES = {
 
 
 class FakeCommands:
-    def __init__(self, app, *, fail_phase=None, reject_notary=False, wrong_team=False):
+    def __init__(self, app, *, fail_phase=None, reject_notary=False, wrong_team=False,
+                 auto_register=False, bad_scope_readback=False, bad_restore_readback=False):
         self.app = app
         self.calls = []
         self.fail_phase = fail_phase
         self.reject_notary = reject_notary
         self.wrong_team = wrong_team
+        self.original_search_list = ["/Users/runner/Library/Keychains/login.keychain-db", "/Library/Keychains/System.keychain"]
+        self.search_list = list(self.original_search_list)
+        self.auto_register = auto_register
+        self.bad_scope_readback = bad_scope_readback
+        self.bad_restore_readback = bad_restore_readback
 
     def run(self, args, *, phase, **kwargs):
         self.calls.append((args, phase))
         if phase == self.fail_phase:
             raise MODULE.SigningError("simulated command failed")
+        if phase == "Create temporary signing keychain" and self.auto_register:
+            self.search_list.append(str(Path(args[-1]).resolve()))
+        if args[:4] == ["/usr/bin/security", "list-keychains", "-d", "user"]:
+            if "-s" in args:
+                self.search_list = list(args[5:])
+                return ""
+            if phase == "Verify temporary keychain search scope" and self.bad_scope_readback:
+                return '"/unexpected/keychain"\n'
+            if phase == "Verify original user keychain search list" and self.bad_restore_readback:
+                return '"/unexpected/keychain"\n'
+            return "".join(json.dumps(path) + "\n" for path in self.search_list)
         if phase == "Validate Developer ID identity":
             team = "XYZ1234567" if self.wrong_team else TEAM
             return f'1) {IDENTITY} "Developer ID Application: Fixture ({team})"\n1 valid identities found\n'
@@ -123,7 +140,9 @@ class AppleSigningTests(unittest.TestCase):
         self.assertTrue(info["apple_notarized"])
         self.assertEqual(info["macos_signing"], "Developer ID Application")
         self.assertEqual(list(self.root.glob("devicebridge-apple-*")), [])
-        self.assertFalse(any("list-keychains" in args or "default-keychain" in args for args, _ in commands.calls))
+        self.assertFalse(any("default-keychain" in args for args, _ in commands.calls))
+        self.assertEqual(commands.search_list, commands.original_search_list)
+        self.assertLess(phases.index("Verify original user keychain search list"), phases.index("Delete temporary keychain"))
         all_output = "".join(p.read_text() for p in (self.root / "output").iterdir() if p.suffix != ".dmg")
         for name, value in VALUES.items():
             if name != "APPLE_TEAM_ID":
@@ -181,8 +200,152 @@ class AppleSigningTests(unittest.TestCase):
             with self.assertRaises(MODULE.SigningError):
                 self.invoke(commands)
             self.assertIn("Delete temporary keychain", [p for _, p in commands.calls])
+            phases = [p for _, p in commands.calls]
+            self.assertLess(phases.index("Verify original user keychain search list"), phases.index("Delete temporary keychain"))
+            self.assertEqual(commands.search_list, commands.original_search_list)
             self.assertEqual(list(self.root.glob("devicebridge-apple-*")), [])
             shutil.rmtree(self.root / "output")
+
+    def test_scoped_search_list_preserves_every_original_path_and_order(self):
+        commands = FakeCommands(self.app)
+        original = ["/Users/runner/Library/Keychains/login with spaces.keychain-db",
+                    '/Users/runner/Library/Keychains/a "quoted" chain.keychain-db',
+                    "/Library/Keychains/System.keychain"]
+        commands.search_list = list(original)
+        scope = MODULE.ScopedKeychainSearchList(commands)
+        temporary = self.root / "own temporary.keychain-db"
+        scope.include(temporary)
+        self.assertEqual(commands.search_list, [*original, str(temporary.resolve())])
+        scope.restore()
+        self.assertEqual(commands.search_list, original)
+        mutations = [args for args, _ in commands.calls if "list-keychains" in args and "-s" in args]
+        self.assertEqual([args[5:] for args in mutations], [[*original, str(temporary.resolve())], original])
+
+    def test_scoped_search_list_restores_an_originally_empty_list(self):
+        commands = FakeCommands(self.app)
+        commands.search_list = []
+        scope = MODULE.ScopedKeychainSearchList(commands)
+        scope.include(self.root / "own.keychain-db")
+        scope.restore()
+        self.assertEqual(commands.search_list, [])
+        restores = [args for args, phase in commands.calls if phase == "Restore original user keychain search list"]
+        self.assertEqual(restores, [["/usr/bin/security", "list-keychains", "-d", "user", "-s"]])
+
+    def test_create_registered_chain_is_not_appended_again(self):
+        commands = FakeCommands(self.app, auto_register=True)
+        self.invoke(commands)
+        phases = [phase for _, phase in commands.calls]
+        self.assertNotIn("Append temporary keychain to preserved search list", phases)
+        self.assertEqual(commands.search_list, commands.original_search_list)
+        self.assertLess(phases.index("Snapshot original user keychain search list"), phases.index("Create temporary signing keychain"))
+        self.assertLess(phases.index("Inspect temporary keychain search scope"), phases.index("Import Developer ID certificate"))
+
+    def test_unknown_search_list_change_is_not_used_for_signing(self):
+        commands = FakeCommands(self.app)
+        scope = MODULE.ScopedKeychainSearchList(commands)
+        commands.search_list.reverse()
+        with self.assertRaisesRegex(MODULE.SigningError, "changed unexpectedly"):
+            scope.include(self.root / "own.keychain-db")
+        self.assertFalse(any("-s" in args for args, _ in commands.calls))
+        scope.restore()
+        self.assertEqual(commands.search_list, commands.original_search_list)
+
+    def test_malformed_search_list_fails_without_echoing_paths_or_mutating(self):
+        for raw in ('"/private-canary-unclosed', '"relative-private-canary"', '"/private-canary\npath"'):
+            commands = FakeCommands(self.app)
+            with patch.object(commands, "run", return_value=raw) as run:
+                with self.assertRaises(MODULE.SigningError) as raised:
+                    MODULE.ScopedKeychainSearchList(commands)
+            self.assertNotIn("private-canary", str(raised.exception))
+            self.assertEqual(run.call_count, 1)
+            self.assertNotIn("-s", run.call_args.args[0])
+
+    def test_scope_setup_failure_restores_before_delete_and_before_apple(self):
+        variants = (FakeCommands(self.app, fail_phase="Append temporary keychain to preserved search list"),
+                    FakeCommands(self.app, bad_scope_readback=True))
+        for commands in variants:
+            with self.assertRaises(MODULE.SigningError):
+                self.invoke(commands)
+            phases = [phase for _, phase in commands.calls]
+            self.assertNotIn("Import Developer ID certificate", phases)
+            self.assertNotIn("Apple notarization upload", phases)
+            self.assertLess(phases.index("Verify original user keychain search list"), phases.index("Delete temporary keychain"))
+            self.assertEqual(commands.search_list, commands.original_search_list)
+            self.assertFalse((self.root / "output/build-info.json").exists())
+            shutil.rmtree(self.root / "output")
+
+    def test_partial_create_failure_also_restores_before_delete(self):
+        class PartialCreate(FakeCommands):
+            def run(self, args, *, phase, **kwargs):
+                result = super().run(args, phase=phase, **kwargs)
+                if phase == "Create temporary signing keychain":
+                    raise MODULE.SigningError("simulated partial create failure")
+                return result
+        commands = PartialCreate(self.app, auto_register=True)
+        with self.assertRaises(MODULE.SigningError):
+            self.invoke(commands)
+        phases = [phase for _, phase in commands.calls]
+        self.assertEqual(commands.search_list, commands.original_search_list)
+        self.assertLess(phases.index("Verify original user keychain search list"), phases.index("Delete temporary keychain"))
+        self.assertNotIn("Import Developer ID certificate", phases)
+
+    def test_snapshot_failure_does_not_create_or_modify_a_keychain(self):
+        commands = FakeCommands(self.app, fail_phase="Snapshot original user keychain search list")
+        with self.assertRaises(MODULE.SigningError):
+            self.invoke(commands)
+        self.assertEqual([phase for _, phase in commands.calls], ["Snapshot original user keychain search list"])
+        self.assertEqual(list(self.root.glob("devicebridge-apple-*")), [])
+
+    def test_restore_or_delete_failure_withholds_accepted_metadata_but_keeps_submission_ids(self):
+        variants = (FakeCommands(self.app, fail_phase="Restore original user keychain search list"),
+                    FakeCommands(self.app, bad_restore_readback=True),
+                    FakeCommands(self.app, fail_phase="Delete temporary keychain"))
+        for commands in variants:
+            signer = MODULE.AppleSigner(commands)
+            with patch.object(MODULE.sys, "platform", "darwin"), patch.dict(os.environ, {"RUNNER_TEMP": str(self.root)}):
+                with self.assertRaisesRegex(MODULE.SigningError, "Cleanup failed"):
+                    signer.run(self.input, self.root / "output", "0.1.8", "132", COMMIT, VALUES)
+            self.assertEqual(signer.summary["status"], "failed")
+            self.assertFalse(signer.summary["apple_notarized"])
+            self.assertEqual(len(signer.summary["submissions"]), 2)
+            self.assertEqual(signer.summary["submission_state"], "accepted")
+            for name in ("build-info.json", "release-notes.md", "SHA256SUMS.txt"):
+                self.assertFalse((self.root / "output" / name).exists())
+            phases = [phase for _, phase in commands.calls]
+            self.assertLess(phases.index("Restore original user keychain search list"), phases.index("Delete temporary keychain"))
+            self.assertEqual(phases.count("Apple notarization upload"), 2)
+            shutil.rmtree(self.root / "output")
+
+    def test_acceptance_is_recorded_only_after_verified_restoration_and_delete(self):
+        owner = self
+        class CheckPublicationOrder(FakeCommands):
+            def run(self, args, *, phase, **kwargs):
+                if phase in ("Restore original user keychain search list", "Verify original user keychain search list", "Delete temporary keychain"):
+                    for name in ("build-info.json", "release-notes.md", "SHA256SUMS.txt"):
+                        owner.assertFalse((owner.root / "output" / name).exists())
+                return super().run(args, phase=phase, **kwargs)
+        signer = self.invoke(CheckPublicationOrder(self.app))
+        self.assertEqual(signer.summary["status"], "accepted")
+        self.assertTrue((self.root / "output/build-info.json").exists())
+
+    def test_restore_failure_does_not_erase_a_pending_submission(self):
+        class FailedWaitAndRestore(FakeCommands):
+            def run(self, args, *, phase, **kwargs):
+                if phase == "Restore original user keychain search list":
+                    self.calls.append((args, phase))
+                    raise MODULE.SigningError("simulated restoration failure")
+                return super().run(args, phase=phase, **kwargs)
+        commands = FailedWaitAndRestore(self.app, fail_phase="Wait for Apple notarization")
+        signer = MODULE.AppleSigner(commands)
+        with patch.object(MODULE.sys, "platform", "darwin"), patch.dict(os.environ, {"RUNNER_TEMP": str(self.root)}):
+            with self.assertRaisesRegex(MODULE.SigningError, "Cleanup failed"):
+                signer.run(self.input, self.root / "output", "0.1.8", "132", COMMIT, VALUES)
+        self.assertEqual(signer.summary["status"], "failed")
+        self.assertFalse(signer.summary["apple_notarized"])
+        self.assertEqual(signer.summary["submission_state"], "submitted-pending")
+        self.assertEqual(signer.summary["submissions"], [{"file": "DeviceBridge-notarization.zip", "id": "12345678-abcd-1234-abcd-123456789abc"}])
+        self.assertEqual([phase for _, phase in commands.calls].count("Apple notarization upload"), 1)
+        self.assertFalse((self.root / "output/build-info.json").exists())
 
     def test_notary_rejection_withholds_success_metadata_and_cleans_up(self):
         commands = FakeCommands(self.app, reject_notary=True)
