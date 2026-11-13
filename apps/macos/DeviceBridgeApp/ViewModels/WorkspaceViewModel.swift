@@ -175,6 +175,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     private let store = DeviceSessionStore()
     private let iosPhotoDiscovery = IOSPhotoDiscovery()
     private let runner: any HostCommandRunning
+    private let hdcToolResolver: @Sendable ([String: String]) -> ToolResolution
     private let arguments: [String]
     private let iosScreenshotRunnerFactory: (@Sendable (URL) throws -> any IOSRunnerManaging)?
     private let iosClipboardHostFactory: (@Sendable (URL) throws -> any IOSRunnerManaging)?
@@ -277,12 +278,16 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     init(
         arguments: [String] = ProcessInfo.processInfo.arguments,
         runner: any HostCommandRunning = HostCommandRunner(),
+        hdcToolResolver: @escaping @Sendable ([String: String]) -> ToolResolution = {
+            HDCToolManager().resolveForDiscovery(environment: $0)
+        },
         iosScreenshotRunnerFactory: (@Sendable (URL) throws -> any IOSRunnerManaging)? = nil,
         iosClipboardHostFactory: (@Sendable (URL) throws -> any IOSRunnerManaging)? = nil,
         iosMemoryProvider: (any IOSWorkspaceVMProviding)? = nil
     ) {
         self.arguments = arguments
         self.runner = runner
+        self.hdcToolResolver = hdcToolResolver
         self.iosScreenshotRunnerFactory = iosScreenshotRunnerFactory
         self.iosClipboardHostFactory = iosClipboardHostFactory
         self.iosMemoryProvider = iosMemoryProvider ?? NativeIOSWorkspaceVMProvider()
@@ -600,7 +605,10 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         refreshTask = nil
         refreshRevision += 1
         hdcURL = nil
-        if selectedDeviceIdentity?.platform == .harmonyOS {
+        // Pending feedback owns the target before the store commits selectedDeviceIdentity.
+        // A switch away from HarmonyOS must not cancel the new Android/iOS selection.
+        let pendingPlatform = deviceSelection.flatMap { $0.isChecking ? $0.device.identity.platform : nil }
+        if (pendingPlatform ?? selectedDeviceIdentity?.platform) == .harmonyOS {
             selectionTask?.cancel()
             selectionRevision += 1
             isSelecting = false
@@ -776,8 +784,9 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         guard !Task.isCancelled, refreshRevision == revision else { return }
         // Static binary checks run off the UI actor and never execute an unselected download.
         let hdcEnvironment = ProcessInfo.processInfo.environment
+        let hdcToolResolver = hdcToolResolver
         let hdcResolution = await Task.detached {
-            HDCToolManager().resolveForDiscovery(environment: hdcEnvironment)
+            hdcToolResolver(hdcEnvironment)
         }.value
         guard !Task.isCancelled, refreshRevision == revision else { return }
         switch hdcResolution {

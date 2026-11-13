@@ -117,6 +117,7 @@ struct WorkspaceInventoryChecks {
         selectionSubscription.cancel()
         fixtureSubscription.cancel()
         try await fixtureContentActions()
+        try await hdcConfigurationInvalidatesOnlyHarmonySelection()
         let recovery = WorkspaceViewModel(arguments: ["--fixture-devices", "--fixture-recovery"])
         recovery.start()
         try await wait { !recovery.isRefreshing }
@@ -131,6 +132,84 @@ struct WorkspaceInventoryChecks {
                     "recovered same-device route skipped rebinding without a foreground helper context")
         recovery.stop()
         print("PASS: workspace inventory — initial/manual busy, silent timer, meaningful publication, offline/authorization recovery, explicit retries, selected removal/reappearance and route rebinding, preserved selection, single-flight, stop/restart stale completion; synthetic commands only, no device or UI")
+    }
+
+    /// Real pending/committed selection ownership, with a process-free HDC resolver and
+    /// probes that deliberately return success after cancellation. No settings are written.
+    @MainActor
+    static func hdcConfigurationInvalidatesOnlyHarmonySelection() async throws {
+        func workspace(_ runner: HDCConfigurationSelectionRunner) -> WorkspaceViewModel {
+            WorkspaceViewModel(arguments: [], runner: runner,
+                hdcToolResolver: { _ in .available(URL(fileURLWithPath: "/synthetic-hdc/hdc")) },
+                iosMemoryProvider: InventoryNoIOSMemory())
+        }
+
+        let runner = HDCConfigurationSelectionRunner()
+        let model = workspace(runner)
+        defer { model.stop() }
+        model.start()
+        try await wait { !model.isRefreshing && model.devices.count == 3 }
+        let harmony = model.devices.first { $0.identity.platform == .harmonyOS }!.identity
+        model.select(harmony)
+        try await wait { await runner.probes == 1 }
+        try require(model.selectedDeviceIdentity == nil && model.deviceSelection?.isChecking == true,
+                    "pending Harmony probe must precede the committed selection")
+        model.hdcConfigurationDidChange()
+        try require(!model.isSelecting && model.deviceSelection == nil && model.connectionHealth == .actionRequired,
+                    "HDC change must synchronously cancel an uncommitted Harmony selection")
+        await runner.release(probe: 1, exitCode: 0)
+        try await wait { await runner.completedProbes == 1 }
+        for _ in 0..<100 { await Task.yield() }
+        try require(model.selectedDeviceIdentity == nil && model.lastSuccessfulCommandAt == nil,
+                    "a cancelled old-HDC success committed a pending Harmony selection")
+        try require(model.connectionHealth == .actionRequired && !model.agentActionsAllowed && !model.canBrowseFiles,
+                    "a cancelled Harmony probe restored readiness or content access")
+        try await wait { !model.isRefreshing }
+        model.select(harmony)
+        try await wait { await runner.probes == 2 }
+        await runner.release(probe: 2, exitCode: 0)
+        try await wait { !model.isSelecting && model.connectionHealth == .healthy }
+        model.hdcConfigurationDidChange()
+        try require(model.selectedDeviceIdentity == harmony && model.connectionHealth == .actionRequired,
+                    "HDC change must invalidate a committed Harmony session without silently reconnecting")
+        try require(!model.agentActionsAllowed && !model.canBrowseFiles,
+                    "old Harmony providers remained usable after HDC configuration changed")
+        try await wait { !model.isRefreshing }
+        try require(await runner.probes == 2 && model.connectionHealth == .actionRequired,
+                    "metadata refresh automatically revalidated an invalidated Harmony session")
+
+        // The old committed identity remains Harmony until the new platform's probe
+        // succeeds. Its pending target must take precedence when deciding cancellation.
+        for platform: DevicePlatform in [.android, .iOS] {
+            let otherRunner = HDCConfigurationSelectionRunner()
+            let otherModel = workspace(otherRunner)
+            defer { otherModel.stop() }
+            otherModel.start()
+            try await wait { !otherModel.isRefreshing && otherModel.devices.count == 3 }
+            let previous = otherModel.devices.first { $0.identity.platform == .harmonyOS }!.identity
+            let target = otherModel.devices.first { $0.identity.platform == platform }!.identity
+            otherModel.select(previous)
+            try await wait { await otherRunner.probes == 1 }
+            await otherRunner.release(probe: 1, exitCode: 0)
+            try await wait { !otherModel.isSelecting && otherModel.connectionHealth == .healthy }
+            otherModel.select(target)
+            try await wait { await otherRunner.probes == 2 }
+            try require(otherModel.selectedDeviceIdentity == previous,
+                        "cross-platform probe unexpectedly committed before completion")
+            otherModel.hdcConfigurationDidChange()
+            try require(otherModel.isSelecting && otherModel.deviceSelection?.device.identity == target
+                            && otherModel.deviceSelection?.isChecking == true,
+                        "HDC change cancelled an unrelated pending \(platform.rawValue) selection")
+            // Failure avoids preparing any native Android/iOS connection resources.
+            await otherRunner.release(probe: 2, exitCode: 1)
+            try await wait { !otherModel.isSelecting }
+            guard case let .failed(device, _) = otherModel.deviceSelection else {
+                throw Failure.failed("unrelated platform probe completion was discarded after HDC change")
+            }
+            try require(device.identity == target && otherModel.connectionHealth == .actionRequired,
+                        "unrelated platform selection lost its own failure feedback")
+        }
+        print("PASS: HDC changes reject late pending Harmony success, invalidate selected Harmony, and preserve pending Android/iOS switches; synthetic commands only")
     }
 
     @MainActor
@@ -433,6 +512,56 @@ private struct InventoryNoIOSMemory: IOSWorkspaceVMProviding {
     func binding(store: DeviceSessionStore, session: ConnectionSession,
                  applicationID: String) async throws -> IOSVerifiedVMBinding {
         throw WorkspaceInventoryChecks.Failure.failed("inventory checks must never open a VM channel")
+    }
+}
+
+private actor HDCConfigurationSelectionRunner: HostCommandRunning {
+    private(set) var probes = 0
+    private(set) var completedProbes = 0
+    private var pending: [Int: CheckedContinuation<HostCommandResult, Never>] = [:]
+
+    func run(_ request: HostCommandRequest) async throws -> HostCommandResult {
+        if request.arguments == ["devices", "-l"] {
+            return result("List of devices attached\nhdc-config-android\tdevice usb:1 model:HDC_Config_Android transport_id:901\n")
+        }
+        if request.arguments == ["list", "targets", "-v"] {
+            return result("hdc-config-harmony USB Connected HDC Config Harmony hdc\n")
+        }
+        if request.arguments.starts(with: ["devicectl", "list", "devices"]),
+           let output = request.arguments.firstIndex(of: "--json-output") {
+            let phone: [String: Any] = [
+                "identifier": "33333333-3333-4333-8333-333333333333",
+                "hardwareProperties": ["udid": "hdc-config-ios", "platform": "iOS", "marketingName": "HDC Config iPhone"],
+                "connectionProperties": ["transportType": "wired", "pairingState": "paired", "tunnelState": "connected"],
+                "deviceProperties": ["name": "HDC Config iPhone", "osVersionNumber": "18.3.1", "developerModeStatus": "enabled", "isLocked": false],
+            ]
+            try JSONSerialization.data(withJSONObject: ["result": ["devices": [phone]]])
+                .write(to: URL(fileURLWithPath: request.arguments[output + 1]))
+            return result("")
+        }
+        let harmonyProbe = request.arguments.count == 4 && request.arguments[0] == "-t"
+            && request.arguments[2] == "shell" && request.arguments[3] == "echo devicebridge-ready"
+        let androidProbe = request.arguments.count == 3 && request.arguments[0] == "-t"
+            && request.arguments[2] == "get-state"
+        let iosProbe = request.arguments.starts(with: ["devicectl", "device", "info", "details"])
+        guard harmonyProbe || androidProbe || iosProbe else {
+            throw WorkspaceInventoryChecks.Failure.failed("unexpected command in HDC configuration selection check")
+        }
+        probes += 1
+        let probe = probes
+        // Intentionally ignore cancellation to exercise the Workspace's stale-result gate.
+        let response = await withCheckedContinuation { pending[probe] = $0 }
+        completedProbes += 1
+        return response
+    }
+
+    func release(probe: Int, exitCode: Int32) {
+        pending.removeValue(forKey: probe)?.resume(returning: HostCommandResult(
+            exitCode: exitCode, standardOutput: Data("devicebridge-ready\n".utf8), standardError: Data()))
+    }
+
+    private func result(_ output: String) -> HostCommandResult {
+        HostCommandResult(exitCode: 0, standardOutput: Data(output.utf8), standardError: Data())
     }
 }
 

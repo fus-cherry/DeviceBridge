@@ -10,8 +10,12 @@ final class HDCManagerUITests: XCTestCase {
     func testHDCPathInspectionImportVersionConsentAndPersistentSelection() throws {
         let root = try makeFixture()
         let app = launch(root: root)
-        let entry = app.buttons["hdc-open-settings"]
-        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+        let sidebar = ensureWorkspaceSidebar(app)
+        let entry = sidebar.buttons["hdc-open-settings"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(entry.isHittable, "The real sidebar entry must be visible before testing its whitespace click")
+        XCTAssertGreaterThan(entry.frame.width, 200, "Tool-management entry must retain a full-row hit area")
+        record(app, name: "hdc-manager-sidebar-entry-before-open")
         entry.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5)).click()
         XCTAssertTrue(app.buttons["hdc-inspect"].waitForExistence(timeout: 5), "Sidebar tool-management entry must open the HDC tab directly")
         let path = app.textFields["hdc-path-field"]
@@ -59,7 +63,7 @@ final class HDCManagerUITests: XCTestCase {
                        "Cancelling execution consent must leave the selection unchanged")
         app.buttons["hdc-activate"].click()
         app.buttons["Enable and allow discovery"].click()
-        assertSelectedPath(imported, root: root)
+        assertSelectedPath(imported, root: root, app: app)
         record(app, name: "hdc-manager-imported-english")
 
         app.terminate()
@@ -70,7 +74,7 @@ final class HDCManagerUITests: XCTestCase {
         XCTAssertFalse(app.buttons["hdc-clear"].isEnabled)
         XCTAssertTrue(app.buttons["hdc-rollback"].isEnabled)
         app.buttons["hdc-rollback"].click()
-        assertSelectedPath(imported, root: root)
+        assertSelectedPath(imported, root: root, app: app)
         XCTAssertTrue(app.buttons["hdc-clear"].isEnabled)
         XCTAssertEqual(app.buttons["hdc-inspect"].label, "Inspect path", "Container AX identifiers must not replace child control labels")
     }
@@ -215,6 +219,20 @@ final class HDCManagerUITests: XCTestCase {
     }
 
     @MainActor
+    private func ensureWorkspaceSidebar(_ app: XCUIApplication) -> XCUIElement {
+        let sidebar = app.scrollViews["device-sidebar"]
+        // macOS can relaunch a WindowGroup app with no restored windows after an
+        // earlier test terminated it from Settings. This is ordinary New Window,
+        // not a fixture-only navigation shortcut or a bypass of the sidebar entry.
+        if !sidebar.waitForExistence(timeout: 2) {
+            app.typeKey("n", modifierFlags: .command)
+            app.activate()
+        }
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 10), app.debugDescription)
+        return sidebar
+    }
+
+    @MainActor
     private func openHDCSettings(_ app: XCUIApplication, chinese: Bool = false) {
         app.activate()
         app.typeKey(",", modifierFlags: .command)
@@ -230,11 +248,17 @@ final class HDCManagerUITests: XCTestCase {
     @MainActor
     private func chooseDirectory(_ directory: URL, prompt: String, app: XCUIApplication) {
         app.typeKey("g", modifierFlags: [.command, .shift])
+        app.typeKey("a", modifierFlags: .command)
         app.typeText(directory.path)
         app.typeKey(.return, modifierFlags: [])
         let choose = app.buttons[prompt]
-        XCTAssertTrue(choose.waitForExistence(timeout: 3), app.debugDescription)
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            choose.exists && choose.isEnabled && choose.isHittable
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed, app.debugDescription)
         choose.click()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !choose.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed, "Directory selection must dismiss the real file panel")
         XCTAssertTrue(app.buttons["hdc-inspect"].waitForExistence(timeout: 3))
     }
 
@@ -269,11 +293,17 @@ final class HDCManagerUITests: XCTestCase {
     private func sources(_ root: URL) throws -> [[String: Any]] { try XCTUnwrap(configuration(root)["sources"] as? [[String: Any]]) }
     private func sourceID(_ name: String, root: URL) throws -> String { try XCTUnwrap(sources(root).first { $0["name"] as? String == name }?["id"] as? String) }
 
-    private func assertSelectedPath(_ expected: String, root: URL) {
+    @MainActor
+    private func assertSelectedPath(_ expected: String, root: URL, app: XCUIApplication) {
         let selected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            (try? self.configuration(root)["selectedExecutablePath"] as? String) == expected
+            let enabledPath = app.staticTexts["hdc-enabled-path"]
+            let clear = app.buttons["hdc-clear"]
+            return (try? self.configuration(root)["selectedExecutablePath"] as? String) == expected
+                && enabledPath.exists && self.displayedText(enabledPath) == expected
+                && clear.exists && clear.isEnabled
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 5), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 5), .completed,
+                       "Selection must be saved on disk and published to the ready UI before continuing")
     }
 
     @MainActor
