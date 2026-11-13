@@ -4,6 +4,11 @@ import DeviceBridgeCore
 import Combine
 import Foundation
 import Security
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// App-owned iOS development signing configuration, not a certificate or a user preference.
 /// Core remains reusable with other teams; both app helper paths use this one owner team.
@@ -500,6 +505,27 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         clipboardAction.canStart
     }
 
+    var clipboardMaximumWriteUTF8Bytes: Int {
+        selectedDevice?.identity.platform == .harmonyOS
+            ? HarmonyClipboardChannel.maximumWriteUTF8Bytes : ClipboardService.maximumUTF8Bytes
+    }
+
+    var canRetryHarmonyClipboardSetup: Bool {
+        selectedDevice?.identity.platform == .harmonyOS && !isClipboardBusy && connectionActionBlock == nil
+    }
+
+    /// Reset only the app-owned channel. Content access still requires a later
+    /// explicit Read/Send action, and the user's editor text is preserved.
+    func retryHarmonyClipboardSetup() {
+        guard canRetryHarmonyClipboardSetup else { return }
+        clipboardService = nil
+        clipboardReadiness = .availableOnDemand(
+            "Choose Read from device or Send to device to check HarmonyOS clipboard access again."
+        )
+        clipboardFeedback = nil
+        clipboardRecoveryAction = nil
+    }
+
     var clipboardReadinessText: String { clipboardAction.statusText }
     var clipboardReadinessDetail: String? { clipboardAction.detail }
 
@@ -517,8 +543,28 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         actionPresentation(for: fileTransferReadiness, busy: isTransferringFile || isInstallingHarmonyPackage)
     }
 
-    var isFileTransferReady: Bool { fileTransferAction.canStart }
+    var isFileTransferReady: Bool {
+        fileTransferAction.canStart && (!usesRestrictedFileDialogFixture || fileDialogFixtureRoot != nil)
+    }
     var fileTransferSelectionRevision: Int { selectionRevision }
+    /// The explicit restricted fixture must never fall back to an unrestricted provider.
+    var usesRestrictedFileDialogFixture: Bool {
+        arguments.contains("--fixture-devices") && arguments.contains("--fixture-file-dialogs")
+    }
+
+    /// Explicit, isolated UI-test seam. Never enables a real HDC/installer.
+    var fileDialogFixtureRoot: URL? {
+        guard arguments.contains("--ui-testing"), arguments.contains("--fixture-devices"),
+              arguments.contains("--fixture-file-dialogs"),
+              let index = arguments.firstIndex(of: "--fixture-file-dialog-root"),
+              arguments.indices.contains(index + 1), arguments[index + 1].hasPrefix("/") else { return nil }
+        let root = URL(fileURLWithPath: arguments[index + 1], isDirectory: true).standardizedFileURL
+        guard root.lastPathComponent.hasPrefix("DeviceBridge-FileDialogs-"),
+              let attributes = try? FileManager.default.attributesOfItem(atPath: root.path),
+              attributes[.type] as? FileAttributeType == .typeDirectory else { return nil }
+        return root.resolvingSymlinksInPath()
+    }
+
     func canUseFileSelection(revision: Int) -> Bool {
         revision == selectionRevision && isFileTransferReady && selectedDevice != nil
     }
@@ -1154,7 +1200,9 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
                 prepareFileTransfer(for: device, session: snapshot.session)
                 startMemoryPreparation(for: device)
                 if device.identity.platform == .harmonyOS {
-                    clipboardReadiness = .actionRequired("HarmonyOS clipboard access is not supported in this version.")
+                    clipboardReadiness = .availableOnDemand(
+                        "HarmonyOS clipboard access is checked only after an explicit read or write. Authorized HDC and testhelper clipboard commands are required."
+                    )
                 } else if device.identity.platform == .iOS,
                    !arguments.contains("--fixture-devices"),
                    case .actionRequired = screenshotReadiness {
@@ -1272,7 +1320,36 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
               let session = await store.snapshot().session,
               session.deviceIdentity == device.identity else { return nil }
         clipboardReadiness = .preparing
-        if device.identity.platform == .iOS, !arguments.contains("--fixture-devices") {
+        if device.identity.platform == .harmonyOS, !arguments.contains("--fixture-devices") {
+            guard let hdcURL else {
+                clipboardReadiness = .actionRequired("Configure and authorize HDC, then select the HarmonyOS device again.")
+                return nil
+            }
+            do {
+                let nonce = UUID().uuidString
+                let channel = try HarmonyClipboardChannel(hdcURL: hdcURL, expectedSession: session,
+                    sessionNonce: nonce, runner: runner, store: store)
+                // This probe checks help and fixed encoding bytes, never clipboard content.
+                let capabilities = try await channel.probeCapabilities()
+                guard capabilities.canRead && capabilities.canWrite else {
+                    throw HarmonyClipboardChannel.Failure.unsupported
+                }
+                guard !Task.isCancelled, selectionRevision == revision,
+                      await store.snapshot().session == session else { return nil }
+                clipboardService = ClipboardService(store: store, channel: channel,
+                    sessionNonce: nonce, helperDeviceID: device.identity.rawValue)
+                clipboardReadiness = .ready
+            } catch let failure as HarmonyClipboardChannel.Failure {
+                guard !Task.isCancelled, selectionRevision == revision else { return nil }
+                // A failed read-only capability check must not trap a healthy
+                // selection behind disabled controls. Only the next explicit
+                // user action retries; no timer or background content access.
+                clipboardReadiness = .availableOnDemand(failure.operationFailure.safeMessage)
+            } catch {
+                guard !Task.isCancelled, selectionRevision == revision else { return nil }
+                clipboardReadiness = .availableOnDemand("HarmonyOS clipboard capability checks failed. Unlock and authorize HDC, then retry the explicit action.")
+            }
+        } else if device.identity.platform == .iOS, !arguments.contains("--fixture-devices") {
             await prepareIOSClipboardHost(for: device, session: session, revision: revision)
         } else if device.identity.platform == .android, !arguments.contains("--fixture-devices") {
             guard let adbURL, let artifact = Self.androidHelperArtifact() else {
@@ -1381,6 +1458,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         destination: DeviceFileLocation,
         replaceExisting: Bool
     ) {
+        guard acceptsRestrictedFileDialogFixtureURL(sourceURL) else { return }
         guard fileTransferAction.canStart else { return }
         guard let service = fileTransferService, !isTransferringFile, !isBrowsingFiles else { return }
         fileTransferRevision += 1
@@ -1417,6 +1495,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         destinationURL: URL,
         replaceExisting: Bool
     ) {
+        guard acceptsRestrictedFileDialogFixtureURL(destinationURL) else { return }
         guard fileTransferAction.canStart else { return }
         guard let service = fileTransferService, !isTransferringFile, !isBrowsingFiles else { return }
         fileTransferRevision += 1
@@ -1463,6 +1542,7 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
     }
 
     func installHarmonyPackage(packageURL: URL, replaceExisting: Bool) {
+        guard acceptsRestrictedFileDialogFixtureURL(packageURL) else { return }
         guard canInstallHarmonyPackage, let service = harmonyPackageService else { return }
         harmonyPackageRevision += 1
         let request = harmonyPackageRevision
@@ -1504,6 +1584,19 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         harmonyPackageService = nil
         isInstallingHarmonyPackage = false
         harmonyPackageFeedback = nil
+    }
+
+    private func acceptsRestrictedFileDialogFixtureURL(_ url: URL) -> Bool {
+        guard usesRestrictedFileDialogFixture else { return true }
+        guard let root = fileDialogFixtureRoot else {
+            reportFileTransferInputError("Fixture file actions require a valid test directory.")
+            return false
+        }
+        guard url.isFileURL, url.resolvingSymlinksInPath().path.hasPrefix(root.path + "/") else {
+            reportFileTransferInputError("Fixture file actions are confined to the test directory.")
+            return false
+        }
+        return true
     }
 
     func reportFileTransferInputError(_ message: String) {
@@ -1910,7 +2003,21 @@ final class WorkspaceViewModel: ObservableObject, AgentAPIWorkspace {
         }
         let provider: (any DeviceFileProviding)?
         if arguments.contains("--fixture-devices") {
-            provider = FixtureFileProvider()
+            if usesRestrictedFileDialogFixture {
+                guard let root = fileDialogFixtureRoot else {
+                    fileTransferService = nil
+                    fileBrowserService = nil
+                    harmonyPackageService = nil
+                    fileTransferReadiness = .actionRequired("Fixture file actions require a valid test directory.")
+                    return
+                }
+                let recorder = FixtureFileDialogRecorder(root: root)
+                provider = FixtureFileProvider(root: root, recorder: recorder)
+                if device.identity.platform == .harmonyOS, let session {
+                    harmonyPackageService = HarmonyPackageInstallService(store: store,
+                        installer: FixtureHarmonyPackageInstaller(root: root, recorder: recorder), session: session)
+                }
+            } else { provider = FixtureFileProvider() }
         } else {
             switch device.identity.platform {
             case .android:
@@ -2881,6 +2988,11 @@ private actor FixtureScreenshotProvider: ScreenshotProviding {
 }
 
 private actor FixtureFileProvider: DeviceFileProviding {
+    private let root: URL?
+    private let recorder: FixtureFileDialogRecorder?
+    init(root: URL? = nil, recorder: FixtureFileDialogRecorder? = nil) {
+        self.root = root; self.recorder = recorder
+    }
     func send(
         localURL: URL,
         destination: DeviceFileLocation,
@@ -2888,6 +3000,11 @@ private actor FixtureFileProvider: DeviceFileProviding {
         operationID: UUID,
         replaceExisting: Bool
     ) async throws -> DeviceFileReceipt {
+        if let root {
+            try requireFileDialogFixtureURL(localURL, root: root)
+            try await recorder?.record(operation: "send", transportID: transportID,
+                                       fileName: localURL.lastPathComponent, relativePath: destination.relativePath)
+        }
         let metadata = try FileIntegrity.metadata(for: localURL)
         return DeviceFileReceipt(byteLength: metadata.byteLength, sha256: metadata.sha256)
     }
@@ -2898,10 +3015,100 @@ private actor FixtureFileProvider: DeviceFileProviding {
         transportID: String,
         operationID: UUID
     ) async throws -> DeviceFileReceipt {
+        if let root {
+            try requireFileDialogFixtureURL(localPartialURL, root: root)
+            try await recorder?.record(operation: "receive", transportID: transportID,
+                                       fileName: localPartialURL.lastPathComponent, relativePath: source.relativePath)
+        }
         let data = Data("Fixture file from device\n".utf8)
         try data.write(to: localPartialURL)
         let metadata = try FileIntegrity.metadata(for: localPartialURL)
         return DeviceFileReceipt(byteLength: metadata.byteLength, sha256: metadata.sha256)
+    }
+}
+
+/// Records only fixture-owned metadata. No device process or real package installer runs.
+/// App-internal visibility lets headless checks exercise the exact file-descriptor boundary.
+actor FixtureFileDialogRecorder {
+    enum RecordingError: Error { case unsafeRoot, unsafeLog, writeFailed }
+    let root: URL
+    init(root: URL) { self.root = root }
+
+    func record(operation: String, transportID: String, fileName: String, relativePath: String) throws {
+        let suppliedRoot = root.standardizedFileURL
+        var initialRoot = stat()
+        guard suppliedRoot.isFileURL, suppliedRoot.path.hasPrefix("/"),
+              suppliedRoot.lastPathComponent.hasPrefix("DeviceBridge-FileDialogs-"),
+              lstat(suppliedRoot.path, &initialRoot) == 0,
+              initialRoot.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
+            throw RecordingError.unsafeRoot
+        }
+        // Parent aliases such as macOS /tmp -> /private/tmp are legitimate.
+        // Reject a symlink final component above, then pin that same directory
+        // inode so a later log-name replacement cannot redirect an append.
+        let canonicalRoot = suppliedRoot.resolvingSymlinksInPath().standardizedFileURL
+        let directory = canonicalRoot.path.withCString { open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW) }
+        guard directory >= 0 else { throw RecordingError.unsafeRoot }
+        defer { _ = close(directory) }
+        var openedRoot = stat()
+        guard fstat(directory, &openedRoot) == 0,
+              openedRoot.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR),
+              openedRoot.st_dev == initialRoot.st_dev, openedRoot.st_ino == initialRoot.st_ino else {
+            throw RecordingError.unsafeRoot
+        }
+
+        let name = "file-dialog-events.jsonl"
+        var previous = stat()
+        let inspected = fstatat(directory, name, &previous, AT_SYMLINK_NOFOLLOW)
+        guard inspected == 0 ? previous.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) && previous.st_nlink == 1 : errno == ENOENT else {
+            throw RecordingError.unsafeLog
+        }
+        let descriptor = name.withCString {
+            openat(directory, $0, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, mode_t(0o600))
+        }
+        guard descriptor >= 0 else { throw RecordingError.unsafeLog }
+        defer { _ = close(descriptor) }
+        var openedLog = stat()
+        guard fstat(descriptor, &openedLog) == 0,
+              openedLog.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG), openedLog.st_nlink == 1 else {
+            throw RecordingError.unsafeLog
+        }
+        var line = try JSONSerialization.data(withJSONObject: ["operation": operation, "transportID": transportID,
+                                                              "fileName": fileName, "relativePath": relativePath], options: [.sortedKeys])
+        line.append(0x0a)
+        try line.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress else { return }
+            var offset = 0
+            while offset < bytes.count {
+                let written = write(descriptor, base.advanced(by: offset), bytes.count - offset)
+                if written < 0, errno == EINTR { continue }
+                guard written > 0 else { throw RecordingError.writeFailed }
+                offset += written
+            }
+        }
+    }
+}
+
+private func requireFileDialogFixtureURL(_ url: URL, root: URL) throws {
+    guard url.isFileURL, url.resolvingSymlinksInPath().path.hasPrefix(root.path + "/") else {
+        throw OperationFailure(code: .restricted, safeMessage: "Fixture file actions are confined to the test directory.")
+    }
+}
+
+private struct FixtureHarmonyPackageInstaller: HarmonyPackageInstalling {
+    let root: URL
+    let recorder: FixtureFileDialogRecorder
+    func install(packageURL: URL, transportID: String, operationID: UUID, replaceExisting: Bool,
+                 validateSession: @escaping @Sendable () async throws -> Void) async throws -> HarmonyPackageInstallReceipt {
+        try requireFileDialogFixtureURL(packageURL, root: root)
+        guard packageURL.pathExtension.lowercased() == "hap" else {
+            throw OperationFailure(code: .unsupported, safeMessage: "Choose one signed HarmonyOS HAP package.")
+        }
+        try Task.checkCancellation()
+        try await validateSession()
+        try await recorder.record(operation: "install", transportID: transportID,
+                                  fileName: packageURL.lastPathComponent, relativePath: "")
+        throw OperationFailure(code: .failure, safeMessage: "Fixture installer stopped before any device action.")
     }
 }
 

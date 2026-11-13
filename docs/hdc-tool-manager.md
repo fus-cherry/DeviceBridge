@@ -1,6 +1,6 @@
 # HDC tool management (0.1.8 candidate)
 
-This release does not bundle or redistribute Huawei's SDK. It never changes the system PATH, shell profile, existing SDK or HDC server. Actual HarmonyOS hardware remains unverified.
+This release does not bundle or redistribute Huawei's SDK. It never changes the system PATH, shell profile, existing SDK or HDC server. Limited HarmonyOS 7 live-device observations are recorded in [the validation report](validation/harmonyos7-20261113.md); they do not validate every toolchain, system version or operation.
 
 ## Configure an existing official toolchain
 

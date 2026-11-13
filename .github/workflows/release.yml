@@ -112,6 +112,7 @@ jobs:
             -only-testing:DeviceBridgeAppUITests/DeviceWorkspaceUITests/testSidebarAutomaticallyRegroupsRecoveredTransport \
             -only-testing:DeviceBridgeAppUITests/DeviceWorkspaceUITests/testSidebarChineseLayoutAndLongDeviceName \
             -only-testing:DeviceBridgeAppUITests/HDCManagerUITests \
+            -only-testing:DeviceBridgeAppUITests/FileTransferDialogUITests \
             CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
             2>&1 | tee .build/sidebar-ui.log
       - name: Export sidebar screenshots

@@ -551,6 +551,7 @@ struct WorkspaceView: View {
             }
             .padding(24)
         }
+        .accessibilityIdentifier("device-workspace-scroll")
         .overlay {
             if model.isSelecting {
                 ProgressView(language.text("Checking selected device…"))

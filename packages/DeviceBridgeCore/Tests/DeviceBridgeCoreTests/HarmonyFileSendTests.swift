@@ -75,6 +75,62 @@ struct HarmonyFileSendTests {
         #expect(await runner.requests.allSatisfy { !$0.arguments.contains("send") && !$0.arguments.last!.contains("rm ") })
     }
 
+    @Test(arguments: ["100", "101"])
+    func publicMkdirDeniedWithZeroHostExitDoesNotSendOrDelete(userID: String) async throws {
+        let (url, directory) = try fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let root = "/storage/media/\(userID)/local/files/Docs/Documents"
+        let runner = HarmonySendRunner(mode: .setupMkdirDenied, approvedRoot: root)
+        do {
+            _ = try await send(url, runner: runner, name: "DeviceBridge-" + UUID().uuidString + "/file.txt",
+                               scope: .harmonyUserDocuments(userID: userID))
+            Issue.record("Expected public directory creation rejection")
+        } catch let failure as OperationFailure {
+            #expect(failure.code == .restricted)
+            #expect(failure.safeMessage == "HarmonyOS denied creating a private transfer folder in the selected user's public Documents directory. No file was sent.")
+            #expect(failure.recoveryAction == "You can explicitly choose HarmonyOS debug files for a temporary transfer, but that location is not guaranteed visible in the phone's file manager. DeviceBridge will not change permissions or switch destinations automatically.")
+            #expect(!failure.safeMessage.contains(".devicebridge-send-"))
+        }
+        let requests = await runner.requests
+        #expect(requests.count == 2) // Canonical parent lookup, then a denied setup only.
+        let setup = try #require(requests.last?.arguments.last)
+        #expect(setup.contains("test -w '" + root + "'"))
+        #expect(setup.contains("'" + root + "\nx'")) // Keep the complete LF sentinel.
+        #expect(setup.contains("umask 077; mkdir '" + root + "/.devicebridge-send-"))
+        #expect(requests.allSatisfy { !$0.arguments.contains("send")
+            && !$0.arguments.last!.contains("DBSEND_COMMITTED")
+            && !$0.arguments.last!.contains("rm ") && !$0.arguments.last!.contains("rmdir ")
+            && !$0.arguments.last!.contains("chmod") && !$0.arguments.last!.contains("chown")
+            && !$0.arguments.last!.contains("/data/local/tmp") })
+        #expect(await runner.aliasContents == nil)
+    }
+
+    @Test(arguments: ["silent", "permissionOnly", "mkdirOtherFailure", "separateLines", "contradictoryReady"])
+    func publicSetupWithoutExplicitMkdirDenialDoesNotInventACause(scenario: String) async throws {
+        let (url, directory) = try fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = switch scenario {
+        case "permissionOnly": "Permission denied\n"
+        case "mkdirOtherFailure": "mkdir: No space left on device\n"
+        case "separateLines": "mkdir diagnostic\nPermission denied\n"
+        case "contradictoryReady": "DBSEND_READY\nmkdir: Permission denied\n"
+        default: ""
+        }
+        let runner = HarmonySendRunner(mode: .conflict,
+            approvedRoot: "/storage/media/100/local/files/Docs/Documents", setupOutput: output)
+        do {
+            _ = try await send(url, runner: runner, name: "DeviceBridge-" + UUID().uuidString + "/file.txt",
+                               scope: .harmonyUserDocuments(userID: "100"))
+            Issue.record("Expected unconfirmed setup rejection")
+        } catch let failure as OperationFailure {
+            #expect(failure.code == .restricted)
+            #expect(failure.safeMessage == "HDC did not confirm a safe private transfer folder in the selected user's public Documents directory. No file was sent.")
+            #expect(failure.recoveryAction?.contains("does not change permissions or remove existing targets") == true)
+        }
+        #expect(await runner.requests.count == 2)
+        #expect(await runner.requests.allSatisfy { !$0.arguments.contains("send") && !$0.arguments.last!.contains("rm ") })
+    }
+
     @Test func zeroExitHDCFailureNeverCommitsAndCleansOnlyStage() async throws {
         let (url, directory) = try fixture()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -369,12 +425,15 @@ private actor HarmonySendSessionGate {
 }
 
 private actor HarmonySendRunner: HostCommandRunning {
-    enum Mode { case success, escapingParent, redirectedRoot, conflict, transferFailure, badHash, cancelTransfer, cancelCommit, commitConflict }
+    enum Mode { case success, escapingParent, redirectedRoot, conflict, setupMkdirDenied, transferFailure, badHash, cancelTransfer, cancelCommit, commitConflict }
     let mode: Mode
     let approvedRoot: String
+    let setupOutput: String?
     private(set) var requests: [HostCommandRequest] = []
     private(set) var aliasContents: Data?
-    init(mode: Mode = .success, approvedRoot: String = "/data/local/tmp") { self.mode = mode; self.approvedRoot = approvedRoot }
+    init(mode: Mode = .success, approvedRoot: String = "/data/local/tmp", setupOutput: String? = nil) {
+        self.mode = mode; self.approvedRoot = approvedRoot; self.setupOutput = setupOutput
+    }
 
     func run(_ request: HostCommandRequest) async throws -> HostCommandResult {
         requests.append(request)
@@ -385,7 +444,12 @@ private actor HarmonySendRunner: HostCommandRunning {
             if mode == .cancelTransfer { throw CancellationError() }
             output = mode == .transferFailure ? "[Fail] permission denied" : "FileTransfer finish"
         } else if script.contains("DBSEND_READY") {
-            output = mode == .conflict ? "" : "DBSEND_READY"
+            // Parent resolution is valid; model a system policy rejecting mkdir even
+            // though the generated test -w check succeeds. HDC merges this into stdout
+            // with host exit 0 and empty stderr on the affected real-device version.
+            output = setupOutput ?? (mode == .setupMkdirDenied
+                ? "mkdir: '\(approvedRoot)/.devicebridge-send-fixture': Permission denied\n"
+                : mode == .conflict ? "" : "DBSEND_READY")
         } else if script.contains("DBSEND_VERIFIED") {
             output = mode == .badHash ? "" : "DBSEND_VERIFIED"
         } else if script.contains("DBSEND_COMMITTED") {
@@ -508,6 +572,39 @@ struct HarmonySendShellTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).allSatisfy { !$0.hasPrefix(".devicebridge-send-") })
     }
 
+    @Test func publicPolicyDeniedMkdirAfterRealParentChecksHasNoTransferSideEffects() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        var bytes = Data("Unicode 公共文档 🙂\n".utf8)
+        bytes.append(Data(repeating: 65, count: 81 - bytes.count))
+        try bytes.write(to: source)
+        let existing = root.appendingPathComponent("existing-user-file.txt")
+        try Data("keep existing user file".utf8).write(to: existing)
+        let runner = HarmonyShellRunner(root: root,
+            approvedRoot: "/storage/media/100/local/files/Docs/Documents", denyStageMkdir: true)
+        let provider = HarmonyFileProvider(hdcURL: URL(fileURLWithPath: "/fake-hdc"), runner: runner)
+        do {
+            _ = try await provider.send(localURL: source,
+                destination: DeviceFileLocation.harmonyUserDocument(userID: "100", fileName: "公共文档.txt"),
+                transportID: "ABC", operationID: UUID(), replaceExisting: false)
+            Issue.record("Expected simulated device-policy mkdir rejection")
+        } catch let failure as OperationFailure {
+            #expect(failure.safeMessage == "HarmonyOS denied creating a private transfer folder in the selected user's public Documents directory. No file was sent.")
+        }
+        // Only mkdir is substituted with a denial primitive. The actual generated
+        // canonical/sentinel/test -d/-w/-x/no-clobber checks must pass to reach it.
+        #expect(await runner.stageMkdirDenied)
+        let requests = await runner.requests
+        #expect(requests.count == 2)
+        #expect(requests.allSatisfy { !$0.arguments.contains("send")
+            && !$0.arguments.last!.contains("DBSEND_COMMITTED")
+            && !$0.arguments.last!.contains("rm ") && !$0.arguments.last!.contains("rmdir ") })
+        #expect(try Data(contentsOf: source) == bytes)
+        #expect(try Data(contentsOf: existing) == Data("keep existing user file".utf8))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted() == ["existing-user-file.txt", "source"])
+    }
+
     @Test func existingEmptyPublicTransferFolderIsNeverRemoved() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -554,12 +651,17 @@ private actor HarmonyShellRunner: HostCommandRunning {
     let approvedRoot: String
     let failPublicMove: Bool
     let filesystemMismatch: Bool
+    let denyStageMkdir: Bool
+    private(set) var requests: [HostCommandRequest] = []
+    private(set) var stageMkdirDenied = false
     init(root: URL, corrupt: Bool = false, approvedRoot: String = "/data/local/tmp",
-         failPublicMove: Bool = false, filesystemMismatch: Bool = false) {
+         failPublicMove: Bool = false, filesystemMismatch: Bool = false, denyStageMkdir: Bool = false) {
         self.root = root; self.corrupt = corrupt; self.approvedRoot = approvedRoot
         self.failPublicMove = failPublicMove; self.filesystemMismatch = filesystemMismatch
+        self.denyStageMkdir = denyStageMkdir
     }
     func run(_ request: HostCommandRequest) async throws -> HostCommandResult {
+        requests.append(request)
         if request.arguments.contains("send") {
             let destination = URL(fileURLWithPath: request.arguments[5].replacingOccurrences(of: approvedRoot, with: root.path))
             try FileManager.default.copyItem(atPath: request.arguments[4], toPath: destination.path)
@@ -567,12 +669,18 @@ private actor HarmonyShellRunner: HostCommandRunning {
             return HostCommandResult(exitCode: 0, standardOutput: Data("FileTransfer finish".utf8), standardError: Data())
         }
         var script = request.arguments.last!.replacingOccurrences(of: approvedRoot, with: root.path)
+        let denyMkdir = denyStageMkdir && script.contains("DBSEND_READY")
+        if denyMkdir {
+            script = "mkdir() { printf 'mkdir: Permission denied\\n'; return 1; }; " + script
+        }
         if failPublicMove { script = script.replacingOccurrences(of: "mv -T ", with: "false ") }
         if filesystemMismatch, let range = script.range(of: "stat -c %d") {
             script.replaceSubrange(range, with: "printf 1; stat -c %d")
         }
         let result = try await HostCommandRunner().run(HostCommandRequest(executableURL: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", script], timeout: .seconds(5)))
-        return HostCommandResult(exitCode: result.exitCode,
+        if denyMkdir { stageMkdirDenied = result.standardOutputString.contains("mkdir: Permission denied") }
+        // Model the affected HDC wrapper's zero host status, not POSIX mkdir success.
+        return HostCommandResult(exitCode: denyMkdir ? 0 : result.exitCode,
             standardOutput: Data(result.standardOutputString.replacingOccurrences(of: root.path, with: approvedRoot).utf8), standardError: result.standardError)
     }
 }

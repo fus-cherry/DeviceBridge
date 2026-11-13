@@ -98,9 +98,7 @@ public actor HarmonyFileProvider: DeviceFileVerifiedSending, DeviceFileBrowsing 
         (umask 077; mkdir \(quote(stage))) && printf 'DBSEND_READY'
         """, target: transportID)
         guard succeeded(setup, marker: "DBSEND_READY") else {
-            throw OperationFailure(code: .restricted, safeMessage: publicDocuments
-                    ? "The public Documents destination is unavailable, unsafe, or already exists. Choose a new transfer folder; existing documents will not be replaced."
-                    : "The HDC destination is unavailable, unsafe, or already exists. Choose Replace explicitly only for an ordinary file.")
+            throw setupFailure(setup, publicDocuments: publicDocuments)
         }
         do {
             try Task.checkCancellation()
@@ -263,6 +261,25 @@ public actor HarmonyFileProvider: DeviceFileVerifiedSending, DeviceFileBrowsing 
 
     private func succeeded(_ result: HostCommandResult, marker: String) -> Bool {
         result.exitCode == 0 && result.standardOutputString == marker && result.standardError.isEmpty
+    }
+
+    private func setupFailure(_ result: HostCommandResult, publicDocuments: Bool) -> OperationFailure {
+        // Some HDC versions merge the remote command's error into stdout and still
+        // return host exit 0. A writable mode bit is not authority to create a folder:
+        // device policy can deny mkdir after every read-only parent check succeeds.
+        let output = (result.standardOutputString + "\n" + result.standardErrorString).lowercased()
+        let mkdirDenied = output.split(whereSeparator: \.isNewline).contains {
+            $0.contains("mkdir") && $0.contains("permission denied")
+        }
+        if publicDocuments, !result.standardOutputString.contains("DBSEND_READY"), mkdirDenied {
+            return OperationFailure(code: .restricted,
+                safeMessage: "HarmonyOS denied creating a private transfer folder in the selected user's public Documents directory. No file was sent.",
+                recoveryAction: "You can explicitly choose HarmonyOS debug files for a temporary transfer, but that location is not guaranteed visible in the phone's file manager. DeviceBridge will not change permissions or switch destinations automatically.")
+        }
+        return OperationFailure(code: .restricted, safeMessage: publicDocuments
+                ? "HDC did not confirm a safe private transfer folder in the selected user's public Documents directory. No file was sent."
+                : "The HDC destination is unavailable, unsafe, or already exists. Choose Replace explicitly only for an ordinary file.",
+            recoveryAction: "No file was sent. Check the selected directory's permissions and whether a destination already exists, then retry. DeviceBridge does not change permissions or remove existing targets.")
     }
 
     private func cleanupStage(_ stage: String, target: String) async {

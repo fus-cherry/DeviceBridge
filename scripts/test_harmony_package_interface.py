@@ -15,7 +15,12 @@ class HarmonyPackageInterfaceSourceChecks(unittest.TestCase):
         body = VIEW.split('private func chooseHarmonyPackage()')[1].split('private var directoryBrowser')[0]
         self.assertEqual(body.count('canUseHarmonyPackageSelection(revision: revision)'), 2)
         self.assertIn('url.pathExtension.lowercased() == "hap"', body)
-        self.assertLess(body.index('alert.runModal()'), body.index('model.installHarmonyPackage'))
+        self.assertLess(body.index('dialogs.confirm(alert, for: window)'), body.index('model.installHarmonyPackage'))
+        self.assertNotIn('runModal()', VIEW)
+        lifecycle = VIEW.split('private final class FileTransferDialogs:')[1]
+        self.assertIn('alert.beginSheetModal(for: window)', lifecycle)
+        self.assertIn('guard response == .alertFirstButtonReturn, window.isVisible else { return }', lifecycle)
+        self.assertIn('self.revision == request', lifecycle)
         self.assertIn('replaceExisting: true', body)
         self.assertIn('arguments: [url.lastPathComponent, deviceName]', body)
 

@@ -7,6 +7,8 @@
 
 		HDC_MANAGER_VIEW = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HDCManagerView.swift; sourceTree = "<group>"; };
 		HDC_MANAGER_VIEW_BUILD = {isa = PBXBuildFile; fileRef = HDC_MANAGER_VIEW; };
+		FILE_DIALOG_UI_TEST = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTransferDialogUITests.swift; sourceTree = "<group>"; };
+		FILE_DIALOG_UI_TEST_BUILD = {isa = PBXBuildFile; fileRef = FILE_DIALOG_UI_TEST; };
 		HDC_MANAGER_UI_TEST = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HDCManagerUITests.swift; sourceTree = "<group>"; };
 		HDC_MANAGER_UI_TEST_BUILD = {isa = PBXBuildFile; fileRef = HDC_MANAGER_UI_TEST; };
 		APP_ENTRY = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceBridgeApp.swift; sourceTree = "<group>"; };
@@ -75,7 +77,7 @@
 		VIEW_MODELS_FOLDER = {isa = PBXGroup; path = ViewModels; sourceTree = "<group>"; children = (WORKSPACE_MODEL, ANDROID_COMMAND_BINDING, ANDROID_SHELL_MODEL, DEVICE_INFORMATION_MODEL, PHONE_IMAGES_MODEL,); };
 		RESOURCES_FOLDER = {isa = PBXGroup; path = Resources; sourceTree = "<group>"; children = (APP_ICON, HELPERS_FOLDER,); };
 		HELPERS_FOLDER = {isa = PBXGroup; path = Helpers; sourceTree = "<group>"; children = (HELPER_MANIFEST, PACKAGE_HELPERS_SCRIPT,); };
-		UI_TEST_GROUP = {isa = PBXGroup; path = DeviceBridgeAppUITests; sourceTree = "<group>"; children = (UI_TEST_FILE, ACCESSIBILITY_UI_TEST_FILE, HDC_MANAGER_UI_TEST,); };
+		UI_TEST_GROUP = {isa = PBXGroup; path = DeviceBridgeAppUITests; sourceTree = "<group>"; children = (UI_TEST_FILE, ACCESSIBILITY_UI_TEST_FILE, HDC_MANAGER_UI_TEST, FILE_DIALOG_UI_TEST,); };
 		PRODUCTS_GROUP = {isa = PBXGroup; name = Products; sourceTree = "<group>"; children = (PRODUCT_APP, UI_TEST_PRODUCT,); };
 
 		SOURCES_PHASE = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (APP_ENTRY_BUILD, HDC_MANAGER_VIEW_BUILD, AGENT_API_CONTROLLER_BUILD, ANDROID_COMMAND_BINDING_BUILD, ANDROID_SHELL_MODEL_BUILD, ANDROID_SHELL_VIEW_BUILD, DEVICE_INFORMATION_MODEL_BUILD, DEVICE_INFORMATION_VIEW_BUILD, WORKSPACE_VIEW_BUILD, CLIPBOARD_VIEW_BUILD, SCREENSHOT_VIEW_BUILD, FILE_TRANSFER_VIEW_BUILD, PHONE_IMAGES_VIEW_BUILD, PHONE_IMAGES_MODEL_BUILD, MEMORY_VIEW_BUILD, WORKSPACE_MODEL_BUILD,); runOnlyForDeploymentPostprocessing = 0; };
@@ -96,7 +98,7 @@
 			shellScript = "/bin/sh \"${SRCROOT}/DeviceBridgeApp/Resources/Helpers/package-helpers.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
-		UI_TEST_SOURCES = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (UI_TEST_BUILD, ACCESSIBILITY_UI_TEST_BUILD, HDC_MANAGER_UI_TEST_BUILD,); runOnlyForDeploymentPostprocessing = 0; };
+		UI_TEST_SOURCES = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (UI_TEST_BUILD, ACCESSIBILITY_UI_TEST_BUILD, HDC_MANAGER_UI_TEST_BUILD, FILE_DIALOG_UI_TEST_BUILD,); runOnlyForDeploymentPostprocessing = 0; };
 		UI_TEST_FRAMEWORKS = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		UI_TEST_RESOURCES = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		UI_TEST_PROXY = {isa = PBXContainerItemProxy; containerPortal = PROJECT; proxyType = 1; remoteGlobalIDString = APP_TARGET; remoteInfo = DeviceBridge; };

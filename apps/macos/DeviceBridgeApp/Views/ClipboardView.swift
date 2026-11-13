@@ -43,6 +43,11 @@ struct ClipboardView: View {
                 Text(language.text("Current text only · text items are joined with newlines"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if model.selectedDevice?.identity.platform == .harmonyOS {
+                    Text(language.text("HarmonyOS clipboard text is read only when requested. Writing replaces its current text."))
+                        .font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("clipboard-harmony-explicit-guidance")
+                }
                 editor(expanded: false)
 
                 HStack {
@@ -73,6 +78,14 @@ struct ClipboardView: View {
                     }
                     .accessibilityIdentifier("clipboard-expand")
                 }
+                if model.selectedDevice?.identity.platform == .harmonyOS {
+                    Button(language.text("Retry clipboard setup"), systemImage: "arrow.clockwise") {
+                        model.retryHarmonyClipboardSetup()
+                    }
+                    .disabled(!model.canRetryHarmonyClipboardSetup)
+                    .help(language.text("Resets only this app's clipboard connection. It does not read or change the device clipboard."))
+                    .accessibilityIdentifier("clipboard-harmony-retry")
+                }
                 exportActions
                 feedback
             }
@@ -100,7 +113,7 @@ struct ClipboardView: View {
 
     private var canInteract: Bool { model.canStartClipboardOperation }
     private var byteCount: Int { model.clipboardText.utf8.count }
-    private var exceedsLimit: Bool { byteCount > ClipboardService.maximumUTF8Bytes }
+    private var exceedsLimit: Bool { byteCount > model.clipboardMaximumWriteUTF8Bytes }
 
     private func editor(expanded: Bool) -> some View {
         TextEditor(text: $model.clipboardText)
@@ -129,7 +142,8 @@ struct ClipboardView: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(byteCount.formatted(.number.locale(language.locale)))
                     .font(.caption.monospacedDigit())
-                Text(language.text("UTF-8 bytes · limit 1 MiB")).font(.caption2)
+                Text(language.text(model.selectedDevice?.identity.platform == .harmonyOS
+                    ? "UTF-8 bytes · HarmonyOS write limit 2 KiB" : "UTF-8 bytes · limit 1 MiB")).font(.caption2)
             }
             .foregroundStyle(exceedsLimit ? Color.orange : Color.secondary)
         }
@@ -137,7 +151,9 @@ struct ClipboardView: View {
 
     @ViewBuilder private var feedback: some View {
         if exceedsLimit {
-            Text(language.text("Clipboard text exceeds 1 MiB (UTF-8). Nothing was truncated or transferred."))
+            Text(language.text(model.selectedDevice?.identity.platform == .harmonyOS
+                ? "HarmonyOS writes are limited to 2 KiB (UTF-8). The complete text is preserved; nothing will be truncated."
+                : "Clipboard text exceeds 1 MiB (UTF-8). Nothing was truncated or transferred."))
                 .font(.caption).foregroundStyle(.orange)
         }
         if let message = exportFeedback ?? model.clipboardFeedback {

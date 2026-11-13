@@ -17,6 +17,15 @@ python3 scripts/compile-core-check.py "$bridge_bin" "${workspace_sources[@]}" \
   -o "$bridge_bin/WorkspaceInventoryChecks"
 "$bridge_bin/WorkspaceInventoryChecks"
 python3 scripts/compile-core-check.py "$bridge_bin" "${workspace_sources[@]}" \
+  apps/macos/DeviceBridgeAppTests/HarmonyClipboardWorkspaceChecks.swift \
+  -o "$bridge_bin/HarmonyClipboardWorkspaceChecks"
+"$bridge_bin/HarmonyClipboardWorkspaceChecks"
+for fixture_check in FixtureFileDialogRecorderChecks FileDialogFixtureWorkspaceChecks; do
+  python3 scripts/compile-core-check.py "$bridge_bin" "${workspace_sources[@]}" \
+    "apps/macos/DeviceBridgeAppTests/${fixture_check}.swift" -o "$bridge_bin/${fixture_check}"
+  "$bridge_bin/${fixture_check}"
+done
+python3 scripts/compile-core-check.py "$bridge_bin" "${workspace_sources[@]}" \
   scripts/verify-workspace-ios-memory.swift \
   -o "$bridge_bin/IOSMemoryAdmissionChecks"
 "$bridge_bin/IOSMemoryAdmissionChecks"

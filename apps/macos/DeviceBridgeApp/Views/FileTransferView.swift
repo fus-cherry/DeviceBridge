@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import DeviceBridgeCore
 import SwiftUI
 import UniformTypeIdentifiers
@@ -14,6 +15,7 @@ struct FileTransferView: View {
     @State private var mode: FileMode = .images
     @State private var fileQuery = ""
     @State private var fileOrder: DeviceFileListOrder = .name
+    @StateObject private var dialogs = FileTransferDialogs()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -23,7 +25,13 @@ struct FileTransferView: View {
                 Text(language.text("File transfer")).tag(FileMode.transfer).accessibilityIdentifier("files-mode-transfer")
             }.pickerStyle(.segmented).frame(maxWidth: 420)
                 .accessibilityIdentifier("files-mode")
-                .disabled(model.isInstallingHarmonyPackage)
+                .disabled(model.isInstallingHarmonyPackage || dialogs.isPresenting)
+            if let stage = dialogs.stage {
+                Text(language.text(stage == .selecting ? "Choose a local file or destination in the open dialog." : "Review the file action in the confirmation dialog."))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("files-native-dialog-state")
+                    .accessibilityValue(stage.rawValue)
+            }
             if mode != .transfer {
                 GroupBox {
                     if let browser = model.imageBrowser {
@@ -40,6 +48,7 @@ struct FileTransferView: View {
             }
         }
         .onChange(of: model.selectedDeviceIdentity, initial: true) { _, _ in
+            dialogs.cancel()
             switch model.selectedDevice?.identity.platform {
             case .iOS: scope = .iOSTemporary
             case .harmonyOS:
@@ -54,10 +63,15 @@ struct FileTransferView: View {
             model.clearFileBrowser()
         }
         .onChange(of: mode) { _, newValue in
+            dialogs.cancel()
             if newValue != .transfer { model.imageBrowser?.selectMediaKind(newValue == .videos ? .video : .image) }
         }
         .onChange(of: scope) { _, _ in resetFolder() }
         .onChange(of: identifier) { _, _ in resetFolder() }
+        .onChange(of: relativePath) { _, _ in dialogs.cancel() }
+        .onChange(of: model.fileTransferSelectionRevision) { _, _ in dialogs.cancel() }
+        .onChange(of: isActive) { _, active in if !active { dialogs.cancel() } }
+        .onDisappear { dialogs.cancel() }
     }
 
     private var mediaUnavailableMessage: String {
@@ -74,6 +88,7 @@ struct FileTransferView: View {
     private enum FileMode: Hashable { case images, videos, transfer }
 
     private func resetFolder() {
+        dialogs.cancel()
         fileQuery = ""
         directoryPath = ""
         relativePath = ""
@@ -117,13 +132,13 @@ struct FileTransferView: View {
                     .pickerStyle(.menu)
                     .accessibilityLabel(language.text("Scope"))
                     .accessibilityIdentifier("files-scope")
-                    .disabled(model.isInstallingHarmonyPackage || model.isTransferringFile)
+                    .disabled(model.isInstallingHarmonyPackage || model.isTransferringFile || dialogs.isPresenting)
 
                     if scope.needsIdentifier {
                         TextField(language.text(scope.identifierPrompt), text: $identifier)
                             .textFieldStyle(.roundedBorder)
                             .accessibilityIdentifier("files-scope-identifier")
-                            .disabled(model.isInstallingHarmonyPackage || model.isTransferringFile)
+                            .disabled(model.isInstallingHarmonyPackage || model.isTransferringFile || dialogs.isPresenting)
                     }
                 }
 
@@ -142,7 +157,7 @@ struct FileTransferView: View {
                 TextField(language.text(scope == .harmonyUserDocuments ? "Relative path for receive or browse (not needed to send)" : "Relative device path"), text: $relativePath)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityIdentifier("files-relative-path")
-                    .disabled(model.isInstallingHarmonyPackage || model.isTransferringFile)
+                    .disabled(model.isInstallingHarmonyPackage || model.isTransferringFile || dialogs.isPresenting)
 
                 HStack {
                     Button(language.text("Send file…"), systemImage: "arrow.up.doc") { chooseFileToSend() }
@@ -196,7 +211,7 @@ struct FileTransferView: View {
             }.font(.caption).accessibilityIdentifier("harmony-apk-help")
             HStack {
                 Button(language.text("Install HAP…"), systemImage: "shippingbox") { chooseHarmonyPackage() }
-                    .disabled(!model.canInstallHarmonyPackage)
+                    .disabled(!model.canInstallHarmonyPackage || dialogs.isPresenting || !isActive)
                     .accessibilityIdentifier("files-install-hap")
                 if model.isInstallingHarmonyPackage {
                     Button(language.text("Cancel"), role: .cancel) { model.cancelHarmonyPackageInstall() }
@@ -212,36 +227,39 @@ struct FileTransferView: View {
     }
 
     private func chooseHarmonyPackage() {
-        guard model.canInstallHarmonyPackage else { return }
+        guard model.canInstallHarmonyPackage, !dialogs.isPresenting, isActive else { return }
         let revision = model.fileTransferSelectionRevision
+        let selectedScope = scope, selectedIdentifier = identifier, selectedPath = relativePath
         let deviceName = model.selectedDevice?.name ?? ""
         let panel = NSOpenPanel()
         panel.title = language.text("Install HAP…")
         panel.allowedContentTypes = [UTType(filenameExtension: "hap") ?? .data]
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard model.canUseHarmonyPackageSelection(revision: revision) else {
-            model.reportFileTransferInputError("Device selection changed. Choose the file again.")
-            return
-        }
-        guard url.pathExtension.lowercased() == "hap" else {
-            model.reportFileTransferInputError("Choose a HarmonyOS .hap package. APK files can only be copied, not installed through HDC.")
-            return
-        }
-        let alert = NSAlert()
-        alert.messageText = language.text("Install or update HAP?")
-        alert.informativeText = InterfaceMessage(
-            "Package: {0}\nDevice: {1}\nHDC may replace an existing app with the same bundle ID. The device must authorize this signed HAP. No automatic uninstall will be attempted.",
-            arguments: [url.lastPathComponent, deviceName]).render(in: language)
-        alert.addButton(withTitle: language.text("Install or update"))
-        alert.addButton(withTitle: language.text("Cancel"))
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        guard model.canUseHarmonyPackageSelection(revision: revision) else {
-            model.reportFileTransferInputError("Device selection changed. Choose the file again.")
-            return
-        }
-        model.installHarmonyPackage(packageURL: url, replaceExisting: true)
+        if let root = model.fileDialogFixtureRoot { panel.directoryURL = root }
+        guard dialogs.choose(panel, for: NSApp.keyWindow, completion: { url, window in
+            guard inputIsCurrent(revision: revision, selectedScope: selectedScope,
+                                 selectedIdentifier: selectedIdentifier, selectedPath: selectedPath),
+                  model.canUseHarmonyPackageSelection(revision: revision) else { rejectStaleSelection(); return }
+            guard acceptsFixtureURL(url) else { return }
+            guard url.pathExtension.lowercased() == "hap" else {
+                model.reportFileTransferInputError("Choose a HarmonyOS .hap package. APK files can only be copied, not installed through HDC.")
+                return
+            }
+            let alert = NSAlert()
+            alert.messageText = language.text("Install or update HAP?")
+            alert.informativeText = InterfaceMessage(
+                "Package: {0}\nDevice: {1}\nHDC may replace an existing app with the same bundle ID. The device must authorize this signed HAP. No automatic uninstall will be attempted.",
+                arguments: [url.lastPathComponent, deviceName]).render(in: language)
+            alert.addButton(withTitle: language.text("Install or update"))
+            alert.addButton(withTitle: language.text("Cancel"))
+            _ = dialogs.confirm(alert, for: window) {
+                guard inputIsCurrent(revision: revision, selectedScope: selectedScope,
+                                     selectedIdentifier: selectedIdentifier, selectedPath: selectedPath),
+                      model.canUseHarmonyPackageSelection(revision: revision) else { rejectStaleSelection(); return }
+                model.installHarmonyPackage(packageURL: url, replaceExisting: true)
+            }
+        }) else { reportDialogUnavailable(); return }
     }
 
     private var directoryBrowser: some View {
@@ -355,12 +373,12 @@ struct FileTransferView: View {
     }
 
     private var canSend: Bool {
-        model.isFileTransferReady && !model.isTransferringFile && hasValidIdentifier
+        isActive && !dialogs.isPresenting && model.isFileTransferReady && !model.isTransferringFile && hasValidIdentifier
             && (scope == .harmonyUserDocuments || !relativePath.isEmpty)
     }
 
     private var canAct: Bool {
-        model.isFileTransferReady
+        isActive && !dialogs.isPresenting && model.isFileTransferReady
             && !model.isTransferringFile
             && !relativePath.isEmpty
             && hasValidIdentifier
@@ -387,65 +405,96 @@ struct FileTransferView: View {
 
     private func chooseFileToSend() {
         guard canSend else { return }
-        let selectedScope = scope
-        let selectedIdentifier = identifier
-        let selectedRelativePath = relativePath
+        let selectedScope = scope, selectedIdentifier = identifier, selectedRelativePath = relativePath
         let revision = model.fileTransferSelectionRevision
+        let selectedPlatform = model.selectedDevice?.identity.platform
         let panel = NSOpenPanel()
         panel.title = language.text("Send file…")
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard model.canUseFileSelection(revision: revision) else {
-            model.reportFileTransferInputError("Device selection changed. Choose the file again.")
-            return
-        }
-        let location: DeviceFileLocation
-        do {
-            if selectedScope == .harmonyUserDocuments {
-                location = try DeviceFileLocation.harmonyUserDocument(userID: selectedIdentifier, fileName: url.lastPathComponent)
-            } else {
-                location = try DeviceFileLocation(scope: selectedScope.deviceScope(identifier: selectedIdentifier), relativePath: selectedRelativePath)
-            }
-        } catch {
-            model.reportFileTransferInputError("Enter a valid phone OS user ID and a safe file path. No file was sent.")
-            return
-        }
-        if model.selectedDevice?.identity.platform == .harmonyOS, url.pathExtension.lowercased() == "apk" {
-            let alert = NSAlert()
-            alert.messageText = language.text("Copy APK only?")
-            let key = selectedScope == .harmonyUserDocuments
-                ? "Copy APK to user documents: {0}\nTry Files > My phone > Documents > the generated DeviceBridge folder. Permission and visibility are device-dependent and unverified. This is only a copy; HDC cannot install APKs natively on HarmonyOS. Third-party compatibility apps vary."
-                : "Copy APK to debug folder: {0}\nThis is not a user download and may not appear in Files. This is only a copy; HDC cannot install APKs natively on HarmonyOS. Third-party compatibility apps vary."
-            alert.informativeText = InterfaceMessage(key, arguments: [model.harmonyDestinationPath(for: location) ?? location.relativePath]).render(in: language)
-            alert.addButton(withTitle: language.text("Copy file"))
-            alert.addButton(withTitle: language.text("Cancel"))
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
-            guard model.canUseFileSelection(revision: revision) else {
-                model.reportFileTransferInputError("Device selection changed. Choose the file again.")
+        if let root = model.fileDialogFixtureRoot { panel.directoryURL = root }
+        guard dialogs.choose(panel, for: NSApp.keyWindow, completion: { url, window in
+            guard inputIsCurrent(revision: revision, selectedScope: selectedScope,
+                                 selectedIdentifier: selectedIdentifier, selectedPath: selectedRelativePath),
+                  model.canUseFileSelection(revision: revision) else { rejectStaleSelection(); return }
+            guard acceptsFixtureURL(url) else { return }
+            let destination: DeviceFileLocation
+            do {
+                if selectedScope == .harmonyUserDocuments {
+                    destination = try DeviceFileLocation.harmonyUserDocument(userID: selectedIdentifier, fileName: url.lastPathComponent)
+                } else {
+                    destination = try DeviceFileLocation(scope: selectedScope.deviceScope(identifier: selectedIdentifier), relativePath: selectedRelativePath)
+                }
+            } catch {
+                model.reportFileTransferInputError("Enter a valid phone OS user ID and a safe file path. No file was sent.")
                 return
             }
-        }
-        model.sendFile(sourceURL: url, destination: location, replaceExisting: false)
+            let send: @MainActor () -> Void = {
+                guard inputIsCurrent(revision: revision, selectedScope: selectedScope,
+                                     selectedIdentifier: selectedIdentifier, selectedPath: selectedRelativePath),
+                      model.canUseFileSelection(revision: revision) else { rejectStaleSelection(); return }
+                model.sendFile(sourceURL: url, destination: destination, replaceExisting: false)
+            }
+            if selectedPlatform == .harmonyOS, url.pathExtension.lowercased() == "apk" {
+                let alert = NSAlert()
+                alert.messageText = language.text("Copy APK only?")
+                let key = selectedScope == .harmonyUserDocuments
+                    ? "Copy APK to user documents: {0}\nTry Files > My phone > Documents > the generated DeviceBridge folder. Permission and visibility are device-dependent and unverified. This is only a copy; HDC cannot install APKs natively on HarmonyOS. Third-party compatibility apps vary."
+                    : "Copy APK to debug folder: {0}\nThis is not a user download and may not appear in Files. This is only a copy; HDC cannot install APKs natively on HarmonyOS. Third-party compatibility apps vary."
+                alert.informativeText = InterfaceMessage(key, arguments: [model.harmonyDestinationPath(for: destination) ?? destination.relativePath]).render(in: language)
+                alert.addButton(withTitle: language.text("Copy file"))
+                alert.addButton(withTitle: language.text("Cancel"))
+                _ = dialogs.confirm(alert, for: window, completion: send)
+            } else { send() }
+        }) else { reportDialogUnavailable(); return }
     }
 
     private func chooseReceiveDestination() {
-        guard let location = location() else { return }
+        guard canAct, let selectedLocation = location() else { return }
         let revision = model.fileTransferSelectionRevision
+        let selectedScope = scope, selectedIdentifier = identifier, selectedPath = relativePath
         let panel = NSSavePanel()
+        panel.identifier = NSUserInterfaceItemIdentifier("file-transfer-save-panel")
         panel.title = language.text("Receive file…")
-        panel.nameFieldStringValue = (relativePath as NSString).lastPathComponent
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard model.canUseFileSelection(revision: revision) else {
-            model.reportFileTransferInputError("Device selection changed. Choose the file again.")
-            return
+        panel.nameFieldStringValue = (selectedPath as NSString).lastPathComponent
+        if let root = model.fileDialogFixtureRoot { panel.directoryURL = root }
+        guard dialogs.choose(panel, for: NSApp.keyWindow, completion: { url, _ in
+            guard inputIsCurrent(revision: revision, selectedScope: selectedScope,
+                                 selectedIdentifier: selectedIdentifier, selectedPath: selectedPath),
+                  model.canUseFileSelection(revision: revision) else { rejectStaleSelection(); return }
+            guard acceptsFixtureURL(url) else { return }
+            model.receiveFile(source: selectedLocation, destinationURL: url,
+                              replaceExisting: FileManager.default.fileExists(atPath: url.path))
+        }) else { reportDialogUnavailable(); return }
+    }
+
+    private func inputIsCurrent(revision: Int, selectedScope: ScopeChoice,
+                                selectedIdentifier: String, selectedPath: String) -> Bool {
+        isActive && mode == .transfer && model.fileTransferSelectionRevision == revision
+            && scope == selectedScope && identifier == selectedIdentifier && relativePath == selectedPath
+            && !model.isBrowsingFiles
+    }
+
+    private func acceptsFixtureURL(_ url: URL) -> Bool {
+        guard model.usesRestrictedFileDialogFixture else { return true }
+        guard let root = model.fileDialogFixtureRoot else {
+            model.reportFileTransferInputError("Fixture file actions require a valid test directory.")
+            return false
         }
-        model.receiveFile(
-            source: location,
-            destinationURL: url,
-            replaceExisting: FileManager.default.fileExists(atPath: url.path)
-        )
+        guard url.isFileURL, url.resolvingSymlinksInPath().path.hasPrefix(root.path + "/") else {
+            model.reportFileTransferInputError("Fixture file actions are confined to the test directory.")
+            return false
+        }
+        return true
+    }
+
+    private func rejectStaleSelection() {
+        model.reportFileTransferInputError("Device selection changed. Choose the file again.")
+    }
+
+    private func reportDialogUnavailable() {
+        model.reportFileTransferInputError("Open the selected device window again before choosing a file.")
     }
 
     private var readinessColor: Color {
@@ -454,6 +503,69 @@ struct FileTransferView: View {
         case .idle, .availableOnDemand: .secondary
         case .preparing: .blue
         case .actionRequired: .orange
+        }
+    }
+}
+
+/// Owns one native picker/confirmation chain. Cancellation invalidates completion
+/// before dismissing AppKit, so a late OK can never submit a stale device action.
+@MainActor
+private final class FileTransferDialogs: ObservableObject {
+    enum Stage: String { case selecting, confirming }
+    @Published private(set) var stage: Stage?
+    var isPresenting: Bool { stage != nil }
+    private var panel: NSSavePanel?
+    private var alert: NSAlert?
+    private var revision = UUID()
+
+    func choose(_ panel: NSSavePanel, for window: NSWindow?,
+                completion: @escaping @MainActor (URL, NSWindow) -> Void) -> Bool {
+        guard !isPresenting, let window, window.isVisible else { return false }
+        let request = UUID()
+        revision = request
+        self.panel = panel
+        stage = .selecting
+        panel.beginSheetModal(for: window) { [weak self] response in
+            Task { @MainActor in
+                guard let self, self.revision == request else { return }
+                self.revision = UUID()
+                self.panel = nil
+                self.stage = nil
+                guard response == .OK, let url = panel.url, window.isVisible else { return }
+                completion(url, window)
+            }
+        }
+        return true
+    }
+
+    func confirm(_ alert: NSAlert, for window: NSWindow,
+                 completion: @escaping @MainActor () -> Void) -> Bool {
+        guard !isPresenting, window.isVisible else { return false }
+        let request = UUID()
+        revision = request
+        self.alert = alert
+        stage = .confirming
+        alert.beginSheetModal(for: window) { [weak self] response in
+            Task { @MainActor in
+                guard let self, self.revision == request else { return }
+                self.revision = UUID()
+                self.alert = nil
+                self.stage = nil
+                guard response == .alertFirstButtonReturn, window.isVisible else { return }
+                completion()
+            }
+        }
+        return true
+    }
+
+    func cancel() {
+        revision = UUID()
+        let pendingPanel = panel, pendingAlert = alert
+        panel = nil; alert = nil; stage = nil
+        pendingPanel?.cancel(nil)
+        if let sheet = pendingAlert?.window, let parent = sheet.sheetParent {
+            parent.endSheet(sheet, returnCode: .cancel)
+            sheet.orderOut(nil)
         }
     }
 }

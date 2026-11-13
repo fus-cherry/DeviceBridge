@@ -125,6 +125,9 @@ public actor ClipboardService {
                 now: now,
                 payload: [:]
             ))
+        } catch let failure as HarmonyClipboardChannel.Failure {
+            await store.finishOperation(token)
+            return .failure(failure.operationFailure)
         } catch is CancellationError {
             await store.finishOperation(token)
             return cancelledOutcome()
@@ -180,6 +183,9 @@ public actor ClipboardService {
                 now: now,
                 payload: ["text": .string(text)]
             ))
+        } catch let failure as HarmonyClipboardChannel.Failure {
+            await store.finishOperation(token)
+            return .failure(failure.operationFailure)
         } catch is CancellationError {
             await store.finishOperation(token)
             return cancelledOutcome()
