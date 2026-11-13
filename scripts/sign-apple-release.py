@@ -2,9 +2,10 @@
 """Sign a verified CI package with Developer ID, notarize, and staple it.
 
 Secrets are read only from the process environment. External command output is
-captured, never echoed. This script never replaces the default keychain/search list and never installs
-or runs the downloaded application. A temporary chain may be registered by
-Apple's create-keychain and is deleted in finally.
+captured, never echoed. This script never changes the default keychain and never
+installs or runs the downloaded application. It preserves the full user search
+list while temporarily including its own keychain, then verifies exact search
+list restoration before deleting that keychain or publishing success metadata.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -54,6 +56,60 @@ def safe_child_environment() -> dict[str, str]:
     # Only notarytool/security receive required credentials as explicit arguments.
     # None of the artifact inspection, packaging, or verification tools inherit Secrets.
     return {k: v for k, v in os.environ.items() if k not in SECRET_NAMES}
+
+
+class ScopedKeychainSearchList:
+    """Preserve a complete user search list around one self-created keychain.
+
+    Construct before create-keychain, which may itself register the new chain.
+    No keychain paths or tool output are logged. Commands always use argv, never
+    a shell. This helper does not change defaults, trust, ACLs or certificates.
+    """
+
+    def __init__(self, commands: Commands):
+        self.commands = commands
+        self.original = self._read("Snapshot original user keychain search list")
+
+    def _read(self, phase: str) -> tuple[str, ...]:
+        raw = self.commands.run(["/usr/bin/security", "list-keychains", "-d", "user"],
+                                phase=phase, timeout=60, include_stderr=True)
+        try:
+            paths = tuple(shlex.split(raw))
+        except ValueError as error:
+            raise SigningError("User keychain search list is malformed; no paths logged") from error
+        if any(not Path(path).is_absolute() or any(c in path for c in "\r\n\x00") for path in paths):
+            raise SigningError("User keychain search list contains an unexpected path; no paths logged")
+        return paths
+
+    def include(self, keychain: Path) -> None:
+        def canonical(path):
+            try:
+                return str(Path(path).resolve())
+            except (OSError, RuntimeError) as error:
+                raise SigningError("Unable to resolve temporary keychain search scope; no paths logged") from error
+
+        target = canonical(keychain)
+        current = self._read("Inspect temporary keychain search scope")
+        # create-keychain may add this chain automatically, in any position.
+        # No other existing entry may disappear, move or be replaced.
+        is_target = lambda path: canonical(path) == target
+        if current != self.original and tuple(p for p in current if not is_target(p)) != self.original:
+            raise SigningError("User keychain search list changed unexpectedly; signing withheld")
+        if any(is_target(path) for path in current):
+            return
+        expected = (*current, target)
+        self.commands.run(["/usr/bin/security", "list-keychains", "-d", "user", "-s", *expected],
+                          phase="Append temporary keychain to preserved search list", timeout=60)
+        if self._read("Verify temporary keychain search scope") != expected:
+            raise SigningError("Temporary keychain search scope did not match the preserved list")
+
+    def restore(self) -> None:
+        # Restore even after partial create/append failures. A failed command or
+        # read-back must withhold delivery, regardless of any Apple acceptance.
+        self.commands.run(["/usr/bin/security", "list-keychains", "-d", "user", "-s", *self.original],
+                          phase="Restore original user keychain search list", timeout=60)
+        if self._read("Verify original user keychain search list") != self.original:
+            raise SigningError("Original user keychain search list was not exactly restored")
 
 
 def load_secrets(environment: dict[str, str]) -> dict[str, str]:
@@ -164,6 +220,7 @@ class AppleSigner:
     def __init__(self, commands: Commands | None = None):
         self.commands = commands or Commands()
         self.keychain: Path | None = None
+        self.search_list: ScopedKeychainSearchList | None = None
         self.mount: Path | None = None
         self.summary = {"status": "not-started", "apple_notarized": False}
 
@@ -179,7 +236,7 @@ class AppleSigner:
         private_root = Path(tempfile.mkdtemp(prefix="devicebridge-apple-", dir=os.environ.get("RUNNER_TEMP")))
         private_root.chmod(0o700)
         try:
-            self._sign(dmg, output, private_root, info, values)
+            signed_dmg, app_id, dmg_id = self._sign(dmg, output, private_root, info, values)
         finally:
             # Never attach this directory to an artifact, even on failure.
             cleanup_errors = []
@@ -189,6 +246,12 @@ class AppleSigner:
                     self.mount = None
                 except SigningError:
                     cleanup_errors.append("input DMG detach failed")
+            if self.search_list is not None:
+                try:
+                    self.search_list.restore()
+                    self.search_list = None
+                except SigningError:
+                    cleanup_errors.append("original user keychain search list restoration failed")
             if self.keychain is not None:
                 try:
                     self.commands.run(["/usr/bin/security", "delete-keychain", str(self.keychain)], phase="Delete temporary keychain", timeout=60)
@@ -197,9 +260,13 @@ class AppleSigner:
                     cleanup_errors.append("temporary keychain deletion failed")
             shutil.rmtree(private_root, ignore_errors=True)
             if cleanup_errors:
+                self.summary.update(status="failed", apple_notarized=False)
                 raise SigningError("Cleanup failed: " + "; ".join(cleanup_errors))
+        # No accepted metadata or successful summary before verified cleanup.
+        # Existing submission IDs remain in the safe summary even if cleanup fails.
+        self._record_acceptance(output, info, signed_dmg, app_id, dmg_id, values["APPLE_TEAM_ID"])
 
-    def _sign(self, dmg: Path, output: Path, work: Path, info: dict, values: dict[str, str]) -> None:
+    def _sign(self, dmg: Path, output: Path, work: Path, info: dict, values: dict[str, str]) -> tuple[Path, str, str]:
         run = self.commands.run
         team = values["APPLE_TEAM_ID"]
         certificate = work / "identity.p12"
@@ -208,8 +275,10 @@ class AppleSigner:
             stream.write(decode_certificate(values["APPLE_CERTIFICATE_P12_BASE64"]))
         keychain_password = secrets.token_urlsafe(48)
         keychain = work / "signing.keychain-db"
+        self.search_list = ScopedKeychainSearchList(self.commands)
         self.keychain = keychain  # clean up even after a partial create/import failure
         run(["/usr/bin/security", "create-keychain", "-p", keychain_password, str(keychain)], phase="Create temporary signing keychain")
+        self.search_list.include(keychain)
         run(["/usr/bin/security", "set-keychain-settings", "-lut", "21600", str(keychain)], phase="Limit temporary keychain lifetime")
         run(["/usr/bin/security", "unlock-keychain", "-p", keychain_password, str(keychain)], phase="Unlock temporary signing keychain")
         run(["/usr/bin/security", "import", str(certificate), "-k", str(keychain), "-P", values["APPLE_CERTIFICATE_PASSWORD"], "-T", "/usr/bin/codesign"], phase="Import Developer ID certificate")
@@ -267,6 +336,9 @@ class AppleSigner:
         verify_identity(self.commands, signed_dmg, team)
         run(["/usr/bin/hdiutil", "verify", str(signed_dmg)], phase="Verify DMG image integrity")
         run(["/usr/sbin/spctl", "--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=2", str(signed_dmg)], phase="Gatekeeper DMG assessment")
+        return signed_dmg, app_id, dmg_id
+
+    def _record_acceptance(self, output: Path, info: dict, signed_dmg: Path, app_id: str, dmg_id: str, team: str) -> None:
         info.update(macos_signing="Developer ID Application", apple_notarized=True, apple_team_id=team,
                     app_notarization_id=app_id, dmg_notarization_id=dmg_id)
         (output / "build-info.json").write_text(json.dumps(info, indent=2) + "\n")
