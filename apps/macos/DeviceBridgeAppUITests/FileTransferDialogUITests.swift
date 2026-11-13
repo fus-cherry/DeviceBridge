@@ -137,7 +137,11 @@ final class FileTransferDialogUITests: XCTestCase {
             .filter { !previousWindowIDs.contains($0) }
         XCTAssertEqual(addedWindowIDs.count, 1, "New Window must create exactly one additional Workspace")
         let addedWindowID = try XCTUnwrap(addedWindowIDs.first)
-        let newWindow = app.windows[addedWindowID]
+        // SwiftUI's generated window identifier can exceed XCTest's 128-character
+        // string-subscript limit. A predicate matches the same exact identifier.
+        let addedWindows = app.windows.matching(NSPredicate(format: "identifier == %@", addedWindowID))
+        XCTAssertEqual(addedWindows.count, 1, "The exact newly created window must be unique")
+        let newWindow = addedWindows.element(boundBy: 0)
         // Closing our extra window is part of fixture isolation. Termination alone
         // lets SwiftUI/AppKit restore both windows in the next test process.
         addTeardownBlock { @MainActor in
