@@ -235,6 +235,21 @@ class AppleSigningTests(unittest.TestCase):
             self.assertNotIn("canary", str(raised.exception))
             self.assertTrue(set(VALUES).isdisjoint(run.call_args.kwargs["env"]))
 
+    def test_native_ui_diagnostics_cannot_bypass_packaging_or_signing_gate(self):
+        workflow = (Path(__file__).parent.parent / ".github/workflows/release.yml").read_text()
+        build = workflow.split("\n  build:", 1)[1].split("\n  apple-sign:", 1)[0]
+        ui = build.split("- name: Exercise sidebar and HDC manager controls", 1)[1].split("- name: Export sidebar", 1)[0]
+        gate = build.split("- name: Require native UI success before packaging", 1)[1].split("- name: Build and verify DMG", 1)[0]
+        self.assertIn("id: native_ui", ui)
+        self.assertIn("continue-on-error: true", ui)
+        self.assertIn("set -euo pipefail", ui)
+        self.assertIn("if: always()", gate)
+        self.assertIn("NATIVE_UI_OUTCOME: ${{ steps.native_ui.outcome }}", gate)
+        self.assertIn('[[ "$NATIVE_UI_OUTCOME" == success ]]', gate)
+        self.assertIn("exit 1", gate)
+        package = build.split("- name: Build and verify DMG", 1)[1]
+        self.assertNotIn("if:", package)  # implicit success-only after the explicit gate
+
     def test_workflow_limits_secret_scope_and_never_uploads_private_temp(self):
         workflow = (Path(__file__).parent.parent / ".github/workflows/release.yml").read_text()
         job = workflow.split("\n  apple-sign:", 1)[1].split("\n  publish:", 1)[0]

@@ -70,8 +70,14 @@ final class HDCManagerUITests: XCTestCase {
         openHDCSettings(app)
         XCTAssertEqual(app.textFields["hdc-path-field"].value as? String, imported)
         app.buttons["hdc-clear"].click()
-        XCTAssertFalse(app.buttons["hdc-clear"].isEnabled)
-        XCTAssertTrue(app.buttons["hdc-rollback"].isEnabled)
+        let cleared = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard let config = try? self.configuration(root) else { return false }
+            return config["selectedExecutablePath"] as? String == nil
+                && !app.staticTexts["hdc-enabled-path"].exists
+                && !app.buttons["hdc-clear"].isEnabled && app.buttons["hdc-rollback"].isEnabled
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 5), .completed,
+                       "Clearing must persist and update the real controls before rollback")
         app.buttons["hdc-rollback"].click()
         assertSelectedPath(imported, root: root, app: app)
         XCTAssertTrue(app.buttons["hdc-clear"].isEnabled)
@@ -268,20 +274,24 @@ final class HDCManagerUITests: XCTestCase {
 
     @MainActor
     private func chooseDirectory(_ directory: URL, prompt: String, app: XCUIApplication) {
+        // NSOpenPanel is a top-level AXDialog, not an AXWindow. Its native
+        // OKButton is distinct from the Touch Bar's title-only mirror.
+        let panel = app.dialogs["open-panel"]
+        XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         app.typeKey("g", modifierFlags: [.command, .shift])
         app.typeKey("a", modifierFlags: .command)
         app.typeText(directory.path)
         app.typeKey(.return, modifierFlags: [])
-        // NSOpenPanel's window (or its hosting window's sheet) is included here;
-        // the mirrored native Touch Bar actions are deliberately excluded.
-        let choose = app.windows.buttons[prompt]
+        let choose = panel.buttons["OKButton"]
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             choose.exists && choose.isEnabled && choose.isHittable
+                && panel.buttons[prompt].exists
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed, app.debugDescription)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed, panel.debugDescription)
         choose.click()
-        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !choose.exists }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed, "Directory selection must dismiss the real file panel")
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !panel.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed,
+                       "Choosing or importing the directory must dismiss the real NSOpenPanel dialog")
         XCTAssertTrue(app.buttons["hdc-inspect"].waitForExistence(timeout: 3))
     }
 
